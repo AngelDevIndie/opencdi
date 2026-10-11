@@ -1,0 +1,1184 @@
+use std::collections::VecDeque;
+use std::path::Path;
+use log::{info, trace};
+
+#[path = "mpeg/mod.rs"]
+pub mod mpeg;
+
+use self::mpeg::Video;
+
+/// DCLK runs at 45 kHz (15.5 MHz / ~344.44)
+pub const DCLK_FREQ: u64 = 45_000;
+pub const MASTER_CLOCK: u64 = 15_500_000;
+
+// FMV Register Byte Offsets (within 0xE04000..0xE040FF)
+pub const FMV_IER: usize = 0x60;
+pub const FMV_ISR: usize = 0x62;
+pub const FMV_TIMER: usize = 0x64;
+pub const FMV_PICTURE_PERIOD: usize = 0xA8;
+pub const FMV_DISPLAY_PERIOD: usize = 0xAA;
+pub const FMV_SYSCMD: usize = 0xC0;
+pub const FMV_VIDCMD: usize = 0xC2;
+pub const FMV_STREAM: usize = 0xC4;
+pub const FMV_IVEC: usize = 0xDC;
+pub const FMV_XFER: usize = 0xDE;
+
+// FMA Register Byte Offsets (within 0xE03000..0xE030FF)
+pub const FMA_CMD: usize = 0x00;
+pub const FMA_STREAM: usize = 0x08;
+pub const FMA_IVEC: usize = 0x0C;
+pub const FMA_ISR: usize = 0x1A;
+pub const FMA_IER: usize = 0x1C;
+
+// FMV Interrupt Status / Enable bits
+pub const FMV_IRQ_SEQ: u16   = 1 << 0;  // 0x0001: Sequence header / first picture
+pub const FMV_IRQ_GOP: u16   = 1 << 1;  // 0x0002: Group of Pictures header
+pub const FMV_IRQ_PIC: u16   = 1 << 2;  // 0x0004: Picture displayed
+pub const FMV_IRQ_EOD: u16   = 1 << 3;  // 0x0008: End of data / last picture
+pub const FMV_IRQ_RFB: u16   = 1 << 4;  // 0x0010: Request for bits
+pub const FMV_IRQ_NDAT: u16  = 1 << 5;  // 0x0020: No data / underflow
+pub const FMV_IRQ_OVF: u16   = 1 << 6;  // 0x0040: Overflow
+pub const FMV_IRQ_DCL: u16   = 1 << 7;  // 0x0080: Display control latched
+pub const FMV_IRQ_TIM: u16   = 1 << 8;  // 0x0100: Timer tick
+pub const FMV_IRQ_ESI: u16   = 1 << 9;  // 0x0200: End of sequence in stream
+pub const FMV_IRQ_EII: u16   = 1 << 10; // 0x0400: End of ISO program in stream
+pub const FMV_IRQ_VSYNC: u16 = 1 << 11; // 0x0800: Vertical sync
+pub const FMV_IRQ_PAI: u16   = 1 << 12; // 0x1000: Pause acknowledged
+pub const FMV_IRQ_VCUP: u16  = 1 << 13; // 0x2000: Video control update
+pub const FMV_IRQ_ERDD: u16  = 1 << 14; // 0x4000: Error DRAM decoder
+pub const FMV_IRQ_ERDV: u16  = 1 << 15; // 0x8000: Error DRAM video
+
+// FMA Interrupt Status / Enable bits
+pub const FMA_IRQ_EOI: u16   = 1 << 0;  // 0x0001: End of ISO program
+pub const FMA_IRQ_UNF: u16   = 1 << 3;  // 0x0008: Underflow
+pub const FMA_IRQ_DEC: u16   = 1 << 2;  // 0x0004: Decoded data ready
+pub const FMA_IRQ_PLAY: u16  = 1 << 4;  // 0x0010: Playback active
+pub const FMA_IRQ_POLL: u16  = 1 << 8;  // 0x0100: Timer tick
+
+// =========================================================================
+// MPEG Audio Layer-II Decoder (oxideav-mp2)
+// =========================================================================
+
+pub struct Mp2Decoder {
+    state: oxideav_mp2::frame::FrameDecodeState,
+    pub pcm: VecDeque<i16>,
+    pub errors: u64,
+    pub resync_bytes: u64,
+    pub synchronized: bool,
+    pub conceal_discontinuity_frame: bool,
+    pub concealed_frames: u64,
+}
+
+impl Default for Mp2Decoder {
+    fn default() -> Self {
+        Self {
+            state: oxideav_mp2::frame::FrameDecodeState::default(),
+            pcm: VecDeque::new(),
+            errors: 0,
+            resync_bytes: 0,
+            synchronized: false,
+            conceal_discontinuity_frame: false,
+            concealed_frames: 0,
+        }
+    }
+}
+
+impl Mp2Decoder {
+    pub fn reset(&mut self) {
+        self.state.reset();
+        self.pcm.clear();
+        self.errors = 0;
+        self.resync_bytes = 0;
+        self.synchronized = false;
+        self.conceal_discontinuity_frame = false;
+        self.concealed_frames = 0;
+    }
+
+    pub fn decode_available(&mut self, input: &mut VecDeque<u8>) -> u64 {
+        let mut decoded = 0;
+        let mut scanned = 0u64;
+        loop {
+            if input.len() < 4 {
+                break;
+            }
+            let head = [input[0], input[1], input[2], input[3]];
+            let header = match oxideav_mp2::header::FrameHeader::parse(&head) {
+                Ok(header) => header,
+                Err(_) => {
+                    let lost_sync = self.synchronized;
+                    input.pop_front();
+                    if lost_sync {
+                        self.errors += 1;
+                        self.synchronized = false;
+                    } else {
+                        self.resync_bytes += 1;
+                        scanned += 1;
+                    }
+                    continue;
+                }
+            };
+            let frame_size = header.frame_size_bytes();
+            if input.len() < frame_size {
+                break;
+            }
+            let contiguous = input.make_contiguous();
+            match oxideav_mp2::frame::decode_frame_with(&contiguous[..frame_size], &mut self.state) {
+                Ok(frame) => {
+                    if self.conceal_discontinuity_frame {
+                        if scanned != 0 {
+                            Self::append_silence(
+                                &mut self.pcm,
+                                frame.pcm.first().map_or(0, Vec::len),
+                                frame.header.sample_rate,
+                            );
+                            self.concealed_frames += 1;
+                        }
+                        self.conceal_discontinuity_frame = false;
+                    }
+                    Self::append_resampled(&mut self.pcm, &frame.pcm, frame.header.sample_rate);
+                    input.drain(..frame_size);
+                    decoded += 1;
+                    self.synchronized = true;
+                }
+                Err(_) => {
+                    input.pop_front();
+                    self.state.reset();
+                    self.errors += 1;
+                    self.synchronized = false;
+                }
+            }
+        }
+        decoded
+    }
+
+    fn append_resampled(output: &mut VecDeque<i16>, channels: &[Vec<f64>], sample_rate: u32) {
+        let Some(left) = channels.first() else { return; };
+        let right = channels.get(1).unwrap_or(left);
+        let out_len = ((left.len() as u64 * 37_800 + u64::from(sample_rate) / 2)
+            / u64::from(sample_rate)) as usize;
+        for out_index in 0..out_len {
+            let source_pos = out_index as f64 * f64::from(sample_rate) / 37_800.0;
+            let index = source_pos.floor() as usize;
+            let fraction = source_pos - index as f64;
+            let next = (index + 1).min(left.len() - 1);
+            for channel in [left, right] {
+                let sample = channel[index] + (channel[next] - channel[index]) * fraction;
+                output.push_back((sample * 32_768.0).clamp(-32_768.0, 32_767.0) as i16);
+            }
+        }
+    }
+
+    fn append_silence(output: &mut VecDeque<i16>, samples: usize, sample_rate: u32) {
+        let out_len = ((samples as u64 * 37_800 + u64::from(sample_rate) / 2)
+            / u64::from(sample_rate)) as usize;
+        output.extend(std::iter::repeat(0).take(out_len.saturating_mul(2)));
+    }
+}
+
+// =========================================================================
+// MPEG-1 System Stream Demuxer
+// =========================================================================
+
+#[derive(Default)]
+pub struct MpegSystemDemux {
+    pub pending: Vec<u8>,
+    pub video: Vec<u8>,
+    pub audio: VecDeque<u8>,
+    pub last_scr: Option<u64>,
+    pub first_video_pts: Option<u64>,
+    pub last_video_pts: Option<u64>,
+    pub last_video_dts: Option<u64>,
+    pub first_audio_pts: Option<u64>,
+    pub last_audio_pts: Option<u64>,
+    pub selected_audio_stream: Option<u8>,
+    pub selected_video_stream: Option<u8>,
+    pub program_ends: u64,
+}
+
+impl MpegSystemDemux {
+    pub fn clear(&mut self) {
+        self.pending.clear();
+        self.video.clear();
+        self.audio.clear();
+        self.last_scr = None;
+        self.first_video_pts = None;
+        self.last_video_pts = None;
+        self.last_video_dts = None;
+        self.first_audio_pts = None;
+        self.last_audio_pts = None;
+        self.program_ends = 0;
+    }
+
+    pub fn feed(&mut self, bytes: &[u8]) {
+        self.pending.extend_from_slice(bytes);
+        self.parse_available();
+    }
+
+    fn find_prefix(bytes: &[u8]) -> Option<usize> {
+        bytes.windows(3).position(|w| w == [0, 0, 1])
+    }
+
+    fn parse_available(&mut self) {
+        loop {
+            let Some(prefix) = Self::find_prefix(&self.pending) else {
+                if self.pending.len() > 2 {
+                    let keep = self.pending.split_off(self.pending.len() - 2);
+                    self.pending = keep;
+                }
+                return;
+            };
+            if prefix != 0 {
+                self.pending.drain(..prefix);
+            }
+            if self.pending.len() < 4 {
+                return;
+            }
+
+            let stream_id = self.pending[3];
+            match stream_id {
+                0xBA => { // Pack Header
+                    if self.pending.len() < 12 {
+                        return;
+                    }
+                    if self.pending[4] & 0xF0 == 0x20 {
+                        self.last_scr = Some(Self::decode_mpeg1_scr(&self.pending[4..9]));
+                        self.pending.drain(..12);
+                    } else {
+                        if self.pending.len() < 14 {
+                            return;
+                        }
+                        let size = 14 + (self.pending[13] & 7) as usize;
+                        if self.pending.len() < size {
+                            return;
+                        }
+                        self.pending.drain(..size);
+                    }
+                }
+                0xB9 => { // ISO Program End
+                    self.pending.drain(..4);
+                    self.program_ends += 1;
+                }
+                _ => {
+                    if self.pending.len() < 6 {
+                        return;
+                    }
+                    let payload_len = usize::from(u16::from_be_bytes([self.pending[4], self.pending[5]]));
+                    if payload_len == 0 {
+                        let Some(next) = Self::find_prefix(&self.pending[4..]).map(|v| v + 4) else {
+                            return;
+                        };
+                        self.pending.drain(..next);
+                        continue;
+                    }
+                    let packet_len = 6 + payload_len;
+                    if self.pending.len() < packet_len {
+                        return;
+                    }
+                    let packet: Vec<u8> = self.pending.drain(..packet_len).collect();
+                    self.consume_packet(stream_id, &packet);
+                }
+            }
+        }
+    }
+
+    fn consume_packet(&mut self, stream_id: u8, packet: &[u8]) {
+        if !(0xC0..=0xEF).contains(&stream_id) {
+            return;
+        }
+        let Some((payload, pts, dts)) = Self::pes_payload(packet) else {
+            return;
+        };
+        if (0xE0..=0xEF).contains(&stream_id)
+            && self.selected_video_stream.map_or(true, |selected| stream_id & 0x0F == selected)
+        {
+            self.video.extend_from_slice(payload);
+            if let Some(pts) = pts {
+                self.first_video_pts.get_or_insert(pts);
+                self.last_video_pts = Some(pts);
+            }
+            if let Some(dts) = dts.or(pts) {
+                self.last_video_dts = Some(dts);
+            }
+        } else if (0xC0..=0xDF).contains(&stream_id)
+            && self.selected_audio_stream.map_or(true, |selected| stream_id & 0x1F == selected)
+        {
+            self.audio.extend(payload.iter().copied());
+            if let Some(pts) = pts {
+                self.first_audio_pts.get_or_insert(pts);
+                self.last_audio_pts = Some(pts);
+            }
+        }
+    }
+
+    fn decode_mpeg1_scr(bytes: &[u8]) -> u64 {
+        (u64::from(bytes[0] & 0x0E) << 29)
+            | (u64::from(bytes[1]) << 22)
+            | (u64::from(bytes[2] & 0xFE) << 14)
+            | (u64::from(bytes[3]) << 7)
+            | u64::from(bytes[4] >> 1)
+    }
+
+    fn pes_payload(packet: &[u8]) -> Option<(&[u8], Option<u64>, Option<u64>)> {
+        let mut at = 6usize;
+        while packet.get(at) == Some(&0xFF) {
+            at += 1;
+        }
+        if packet.get(at).is_some_and(|b| b & 0xC0 == 0x40) {
+            at += 2;
+        }
+
+        let marker = *packet.get(at)?;
+        let mut pts = None;
+        let mut dts = None;
+        if marker & 0xC0 == 0x80 {
+            // MPEG-2 PES header
+            let flags = *packet.get(at + 1)?;
+            let header_len = usize::from(*packet.get(at + 2)?);
+            if flags & 0x80 != 0 && header_len >= 5 {
+                pts = Self::decode_pts(packet.get(at + 3..at + 8)?);
+            }
+            if flags & 0x40 != 0 && header_len >= 10 {
+                dts = Self::decode_pts(packet.get(at + 8..at + 13)?);
+            }
+            at += 3 + header_len;
+        } else {
+            match marker >> 4 {
+                0x2 => {
+                    pts = Self::decode_pts(packet.get(at..at + 5)?);
+                    at += 5;
+                }
+                0x3 => {
+                    pts = Self::decode_pts(packet.get(at..at + 5)?);
+                    dts = Self::decode_pts(packet.get(at + 5..at + 10)?);
+                    at += 10;
+                }
+                _ if marker == 0x0F => at += 1,
+                _ => {} // Direct payload without PTS or stuffing
+            }
+        }
+        packet.get(at..).map(|payload| (payload, pts, dts))
+    }
+
+    fn decode_pts(bytes: &[u8]) -> Option<u64> {
+        if bytes.len() < 5 || bytes[0] & 1 == 0 || bytes[2] & 1 == 0 || bytes[4] & 1 == 0 {
+            return None;
+        }
+        Some(
+            (u64::from((bytes[0] >> 1) & 7) << 30)
+                | (u64::from(bytes[1]) << 22)
+                | (u64::from(bytes[2] >> 1) << 15)
+                | (u64::from(bytes[3]) << 7)
+                | u64::from(bytes[4] >> 1),
+        )
+    }
+}
+
+// =========================================================================
+// Digital Video Cartridge (DVC) Core
+// =========================================================================
+
+pub struct Dvc {
+    pub rom: Option<Box<[u8; 256 * 1024]>>,
+    pub ram1: Box<[u8; 1024 * 1024]>,   // 1 MB DVC RAM block 1 (0xD00000..0xDFFFFF)
+    pub ram2: Box<[u8; 512 * 1024]>,    // 512 KB Picture DRAM (0xE80000..0xEFFFFF)
+    pub ram2_enabled: bool,
+    pub reg_write_count: u32,
+    pub reg_read_count: u32,
+    pub rom_read_count: u32,
+
+    // Register files (256 bytes each)
+    pub fma_regs: Box<[u8; 256]>,
+    pub fmv_regs: Box<[u8; 256]>,
+
+    // Mirrored fields for easy access
+    pub fma_cmd: u16,
+    pub fma_isr: u16,
+    pub fma_ier: u16,
+    pub fma_ivec: u16,
+    pub fmv_isr: u16,
+    pub fmv_ier: u16,
+    pub fmv_ivec: u16,
+    pub fmv_playback_active: bool,
+    pub fmv_decoder_active: bool,
+
+    // Clock tracking
+    pub total_cycles: u64,
+    pub dclk: u32,
+    pub dclk_accum: u64,
+    pub timer_accum: u64,
+    pub timer_counter: u16,
+
+    // Controls
+    pub video_playing: bool,
+    pub video_armed: bool,
+    pub decoder_enabled: bool,
+    pub audio_armed: bool,
+    pub audio_enabled: bool,
+    pub vcd_pixel_clock_13_5: bool,
+
+    // Timecode tracking
+    pub display_timecode: u32,
+    pub decoder_timecode: u32,
+    pub display_frame_counter: u32,
+    pub decoder_frame_counter: u32,
+    pub fps: f64,
+
+    // Stream & Demux
+    pub dvc_stream_fifo: Vec<u8>,
+    pub transfer_for_fma: bool,
+    pub dma_requested: bool,
+    pub framebuffer: Box<[u32; 352 * 288]>,
+
+    pub demux: MpegSystemDemux,
+    pub mp2: Mp2Decoder,
+    pub audio_out: VecDeque<(f32, f32)>,
+
+    pub video_decoder: Option<Video>,
+    pub video_width: usize,
+    pub video_height: usize,
+    pub frames_decoded_count: usize,
+    pub frames_presented_count: usize,
+    pub vsync_counter: usize,
+    pub underflow_count: u32,
+}
+
+impl Dvc {
+    pub fn new() -> Self {
+        let mut d = Self {
+            rom: None,
+            ram1: vec![0u8; 1024 * 1024].into_boxed_slice().try_into().unwrap(),
+            ram2: vec![0u8; 512 * 1024].into_boxed_slice().try_into().unwrap(),
+            ram2_enabled: false,
+            reg_write_count: 0,
+            reg_read_count: 0,
+            rom_read_count: 0,
+
+            fma_regs: vec![0u8; 256].into_boxed_slice().try_into().unwrap(),
+            fmv_regs: vec![0u8; 256].into_boxed_slice().try_into().unwrap(),
+
+            fma_cmd: 0,
+            fma_isr: 0,
+            fma_ier: 0,
+            fma_ivec: 0,
+            fmv_isr: 0,
+            fmv_ier: 0,
+            fmv_ivec: 0,
+            fmv_playback_active: false,
+            fmv_decoder_active: false,
+
+            total_cycles: 0,
+            dclk: 0,
+            dclk_accum: 0,
+            timer_accum: 0,
+            timer_counter: 0,
+
+            video_playing: false,
+            video_armed: false,
+            decoder_enabled: false,
+            audio_armed: false,
+            audio_enabled: false,
+            vcd_pixel_clock_13_5: false,
+
+            display_timecode: 0,
+            decoder_timecode: 0,
+            display_frame_counter: 0,
+            decoder_frame_counter: 0,
+            fps: 25.0,
+
+            dvc_stream_fifo: Vec::with_capacity(128 * 1024),
+            transfer_for_fma: false,
+            dma_requested: false,
+            framebuffer: vec![0xFF00_0000; 352 * 288].into_boxed_slice().try_into().unwrap(),
+
+            demux: MpegSystemDemux::default(),
+            mp2: Mp2Decoder::default(),
+            audio_out: VecDeque::with_capacity(16 * 1024),
+
+            video_decoder: None,
+            video_width: 352,
+            video_height: 240,
+            frames_decoded_count: 0,
+            frames_presented_count: 0,
+            vsync_counter: 0,
+            underflow_count: 0,
+        };
+        d.reset_regs();
+        d
+    }
+
+    pub fn reset(&mut self) {
+        self.ram1.fill(0);
+        self.ram2.fill(0);
+        self.framebuffer.fill(0xFF00_0000);
+        self.ram2_enabled = false;
+        self.reg_write_count = 0;
+        self.reg_read_count = 0;
+        self.rom_read_count = 0;
+
+        self.reset_stream();
+        self.reset_regs();
+    }
+
+    pub fn reset_stream(&mut self) {
+        self.dvc_stream_fifo.clear();
+        self.demux.clear();
+        self.mp2.reset();
+        self.audio_out.clear();
+        self.video_decoder = None;
+        self.frames_decoded_count = 0;
+        self.frames_presented_count = 0;
+        self.vsync_counter = 0;
+        self.underflow_count = 0;
+        self.display_timecode = 0;
+        self.decoder_timecode = 0;
+        self.display_frame_counter = 0;
+        self.decoder_frame_counter = 0;
+    }
+
+    pub fn reset_regs(&mut self) {
+        self.fma_regs.fill(0);
+        self.fmv_regs.fill(0);
+
+        // FMA defaults
+        self.set_fma_word(0x02, 0x0200); // Ready / Idle status
+        self.set_fma_word(0x04, 0x0007);
+        self.set_fma_word(0x06, 0x0900);
+        self.set_fma_word(0x0E, 0x0042);
+        self.set_fma_word(0x24, 0x0004); // HF2 DSP flag ready
+
+        // FMV defaults
+        self.set_fmv_word(FMV_TIMER, 55);
+        self.set_fmv_word(0x5E, 0x2000); // FIFO Ready
+        self.set_fmv_word(0x9E, 0xFE96); // Dec delay
+        self.set_fmv_word(FMV_PICTURE_PERIOD, 1800); // 25 fps PAL
+        self.set_fmv_word(FMV_DISPLAY_PERIOD, 1800); // 25 fps PAL (0x0708)
+        self.set_fmv_word(0xAC, 1800);               // Frame rate ratio (word 0x56)
+
+        // Offsets & sizes
+        self.set_fmv_word(0x6C, 26);  // Y offset
+        self.set_fmv_word(0x6E, 74);  // X offset
+        self.set_fmv_word(0x02, 352); // Width
+        self.set_fmv_word(0x04, 240); // Height
+        self.set_fmv_word(0x52, 352); // Width
+        self.set_fmv_word(0x54, 240); // Height
+        self.set_fmv_word(0x06, 0x23); // PRPA (4:3 PAL)
+        self.set_fmv_word(0x56, 0x0708);
+
+        self.sync_mirrors();
+    }
+
+    pub fn load_rom<P: AsRef<Path>>(&mut self, path: P) -> std::io::Result<()> {
+        let data = std::fs::read(path)?;
+        let mut rom_buf: Box<[u8; 256 * 1024]> = vec![0xFFu8; 256 * 1024].into_boxed_slice().try_into().unwrap();
+        let copy_len = data.len().min(256 * 1024);
+        rom_buf[..copy_len].copy_from_slice(&data[..copy_len]);
+        if copy_len == 128 * 1024 {
+            rom_buf[128 * 1024..256 * 1024].copy_from_slice(&data[..128 * 1024]);
+        }
+        self.rom = Some(rom_buf);
+        info!("DVC ROM caricata ({} byte)", copy_len);
+        Ok(())
+    }
+
+    pub fn is_fitted(&self) -> bool {
+        self.rom.is_some()
+    }
+
+    #[inline]
+    fn sync_mirrors(&mut self) {
+        self.fma_cmd = self.get_fma_word(FMA_CMD);
+        self.fma_isr = self.get_fma_word(FMA_ISR);
+        self.fma_ier = self.get_fma_word(FMA_IER);
+        self.fma_ivec = self.get_fma_word(FMA_IVEC);
+        self.fmv_isr = self.get_fmv_word(FMV_ISR);
+        self.fmv_ier = self.get_fmv_word(FMV_IER);
+        self.fmv_ivec = self.get_fmv_word(FMV_IVEC);
+        self.fmv_playback_active = self.video_playing;
+        self.fmv_decoder_active = self.decoder_enabled;
+    }
+
+    // Helper register getters / setters
+    #[inline]
+    pub fn get_fma_word(&self, offset: usize) -> u16 {
+        u16::from_be_bytes([self.fma_regs[offset], self.fma_regs[offset + 1]])
+    }
+
+    #[inline]
+    pub fn set_fma_word(&mut self, offset: usize, val: u16) {
+        let bytes = val.to_be_bytes();
+        self.fma_regs[offset] = bytes[0];
+        self.fma_regs[offset + 1] = bytes[1];
+        self.sync_mirrors();
+    }
+
+    #[inline]
+    pub fn or_fma_word(&mut self, offset: usize, val: u16) {
+        let cur = self.get_fma_word(offset);
+        self.set_fma_word(offset, cur | val);
+    }
+
+    #[inline]
+    pub fn get_fmv_word(&self, offset: usize) -> u16 {
+        u16::from_be_bytes([self.fmv_regs[offset], self.fmv_regs[offset + 1]])
+    }
+
+    #[inline]
+    pub fn set_fmv_word(&mut self, offset: usize, val: u16) {
+        let bytes = val.to_be_bytes();
+        self.fmv_regs[offset] = bytes[0];
+        self.fmv_regs[offset + 1] = bytes[1];
+        self.sync_mirrors();
+    }
+
+    #[inline]
+    pub fn or_fmv_word(&mut self, offset: usize, val: u16) {
+        let cur = self.get_fmv_word(offset);
+        self.set_fmv_word(offset, cur | val);
+    }
+
+    pub fn irq_pending(&self) -> bool {
+        let fma_isr = self.get_fma_word(FMA_ISR);
+        let fma_ier = self.get_fma_word(FMA_IER);
+        let fma_ivec = self.get_fma_word(FMA_IVEC);
+        let fma_pending = (fma_isr & fma_ier) != 0 && (fma_ivec & 0xFF) != 0;
+
+        let fmv_isr = self.get_fmv_word(FMV_ISR);
+        let fmv_ier = self.get_fmv_word(FMV_IER);
+        let fmv_ivec = self.get_fmv_word(FMV_IVEC);
+        let fmv_pending = (fmv_isr & fmv_ier) != 0 && (fmv_ivec >> 3) != 0;
+
+        fma_pending || fmv_pending
+    }
+
+    pub fn intack_vector(&mut self) -> u8 {
+        let fma_isr = self.get_fma_word(FMA_ISR);
+        let fma_ier = self.get_fma_word(FMA_IER);
+        let fma_ivec = self.get_fma_word(FMA_IVEC);
+        if (fma_isr & fma_ier) != 0 && (fma_ivec & 0xFF) != 0 {
+            (fma_ivec & 0x00FF) as u8
+        } else {
+            (self.get_fmv_word(FMV_IVEC) >> 3) as u8
+        }
+    }
+
+    pub fn tick(&mut self, cycles: u32) {
+        self.total_cycles += cycles as u64;
+
+        // DCLK runs at 45 kHz
+        self.dclk_accum += (cycles as u64) * DCLK_FREQ;
+        while self.dclk_accum >= MASTER_CLOCK {
+            self.dclk_accum -= MASTER_CLOCK;
+            self.dclk = self.dclk.wrapping_add(1);
+        }
+
+        // FMV Timer runs at 5,625 Hz (period set by TCNT)
+        self.timer_accum += (cycles as u64) * 5_625;
+        while self.timer_accum >= MASTER_CLOCK {
+            self.timer_accum -= MASTER_CLOCK;
+            let compare = self.get_fmv_word(FMV_TIMER);
+            if compare > 0 && self.timer_counter >= compare {
+                self.timer_counter = 0;
+                if self.video_playing || self.decoder_enabled {
+                    self.or_fma_word(FMA_ISR, FMA_IRQ_POLL);
+                    self.or_fmv_word(FMV_ISR, FMV_IRQ_TIM);
+                }
+            } else if compare > 0 {
+                self.timer_counter = self.timer_counter.wrapping_add(1);
+            }
+        }
+    }
+
+    pub fn refresh_fmv_dynamic(&mut self) {
+        let fifo_ready = self.dvc_stream_fifo.len() < 512 * 1024;
+        self.set_fmv_word(0x5E, if fifo_ready { 0x2000 } else { 0 }); // SYS_STS bit 13
+        self.set_fmv_word(0x98, ((self.dclk >> 6) & 0xFFFF) as u16);  // GEN_SYSCR DCLK/64
+        let queue_len = if self.video_decoder.is_some() { 1 } else { 0 };
+        self.set_fmv_word(0xA4, queue_len as u16);                     // Pictures in queue
+        let stream = self.get_fmv_word(FMV_STREAM) & 0xF;
+        self.set_fmv_word(FMV_STREAM, stream);
+    }
+
+    pub fn refresh_fma_dynamic(&mut self, offset: usize) {
+        if offset == 0x24 {
+            self.set_fma_word(0x24, 0x0004); // HF2 flag ready
+        }
+        if offset == 0x10 {
+            self.set_fma_word(0x12, self.dclk as u16);
+        }
+        self.set_fma_word(0x10, (self.dclk >> 16) as u16);
+        let stream = self.get_fma_word(FMA_STREAM) & 0xF;
+        self.set_fma_word(0x0A, stream);
+        if self.audio_enabled {
+            self.fma_regs[0x18] |= 1;
+        }
+        if self.demux.audio.len() >= 4 {
+            let header = [
+                self.demux.audio[0],
+                self.demux.audio[1],
+                self.demux.audio[2],
+                self.demux.audio[3],
+            ];
+            self.fma_regs[0x14..0x18].copy_from_slice(&header);
+        }
+    }
+
+    pub fn acknowledge_fmv_isr(&mut self) {
+        self.set_fmv_word(FMV_ISR, 0);
+    }
+
+    pub fn acknowledge_fma_isr(&mut self) {
+        self.set_fma_word(FMA_ISR, 0);
+    }
+
+    fn count_reg_write(&mut self) {
+        if !self.ram2_enabled {
+            self.reg_write_count = self.reg_write_count.saturating_add(1);
+            if self.reg_write_count >= 64 {
+                self.ram2_enabled = true;
+                info!("DVC Picture DRAM abilitata (64 scritture registri completate)");
+            }
+        }
+    }
+
+    pub fn read_byte(&mut self, addr: u32) -> u8 {
+        self.reg_read_count += 1;
+        let a = addr & 0x00FF_FFFF;
+        match a {
+            0xD00000..=0xDFFFFF => self.read_ram1((a - 0xD00000) as usize),
+            0xE01000..=0xE01FFF => 0xFF,
+            0xE03000..=0xE030FF => {
+                let offset = (a - 0xE03000) as usize;
+                self.refresh_fma_dynamic(offset);
+                let val = self.fma_regs[offset];
+                if offset == FMA_ISR + 1 {
+                    self.acknowledge_fma_isr();
+                }
+                val
+            }
+            0xE04000..=0xE040FF => {
+                let offset = (a - 0xE04000) as usize;
+                self.refresh_fmv_dynamic();
+                let val = self.fmv_regs[offset];
+                if offset == FMV_ISR + 1 {
+                    self.acknowledge_fmv_isr();
+                }
+                val
+            }
+            0xE40000..=0xE7FFFF => self.read_rom((a - 0xE40000) as usize),
+            0xE80000..=0xEFFFFF => {
+                if self.ram2_enabled {
+                    self.read_ram2((a - 0xE80000) as usize)
+                } else {
+                    0xFF
+                }
+            }
+            _ => 0xFF,
+        }
+    }
+
+    pub fn write_byte(&mut self, addr: u32, val: u8) {
+        let a = addr & 0x00FF_FFFF;
+        match a {
+            0xD00000..=0xDFFFFF => self.write_ram1((a - 0xD00000) as usize, val),
+            0xE01000..=0xE01FFF => {
+                self.vcd_pixel_clock_13_5 = (val & 1) != 0;
+                self.count_reg_write();
+            }
+            0xE03000..=0xE030FF => {
+                let offset = (a - 0xE03000) as usize;
+                self.fma_regs[offset] = val;
+                if (offset & 1) != 0 {
+                    self.handle_fma_write(offset & !1);
+                    self.count_reg_write();
+                }
+            }
+            0xE04000..=0xE040FF => {
+                let offset = (a - 0xE04000) as usize;
+                self.fmv_regs[offset] = val;
+                if (offset & 1) != 0 {
+                    self.handle_fmv_write(offset & !1);
+                    self.count_reg_write();
+                }
+            }
+            0xE80000..=0xEFFFFF => {
+                if self.ram2_enabled {
+                    self.write_ram2((a - 0xE80000) as usize, val);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    pub fn read_word(&mut self, addr: u32) -> u16 {
+        let hi = self.read_byte(addr) as u16;
+        let lo = self.read_byte(addr + 1) as u16;
+        (hi << 8) | lo
+    }
+
+    pub fn write_word(&mut self, addr: u32, val: u16) {
+        self.write_byte(addr, (val >> 8) as u8);
+        self.write_byte(addr + 1, val as u8);
+    }
+
+    pub fn read_reg(&mut self, word_offset: u32) -> u16 {
+        let addr = 0x00E00000 + ((word_offset & 0x7FFF) << 1);
+        self.read_word(addr)
+    }
+
+    pub fn write_reg(&mut self, word_offset: u32, data: u16) {
+        let addr = 0x00E00000 + ((word_offset & 0x7FFF) << 1);
+        self.write_word(addr, data);
+    }
+
+    pub fn handle_fma_write(&mut self, offset: usize) {
+        let value = self.get_fma_word(offset);
+        match offset {
+            FMA_CMD => {
+                if value & 0x0001 != 0 { // STOP
+                    self.audio_armed = false;
+                    self.audio_enabled = false;
+                    self.mp2.reset();
+                    self.set_fma_word(0x02, 0x0200);
+                    self.set_fma_word(FMA_ISR, 0);
+                }
+                if value & 0x0002 != 0 { // PLAY ARM
+                    self.audio_armed = true;
+                    self.audio_enabled = true;
+                    self.or_fma_word(0x02, 0x0010);
+                    self.or_fma_word(FMA_ISR, 0x0010);
+                }
+                if value & 0x8000 != 0 { // DMA request Audio
+                    self.dma_requested = true;
+                    self.transfer_for_fma = true;
+                    let status = self.get_fma_word(0x02);
+                    self.set_fma_word(0x02, status & !0x0008);
+                }
+            }
+            FMA_STREAM => {
+                let selected = (value & 0x1F) as u8;
+                self.demux.selected_audio_stream = Some(selected);
+            }
+            FMA_ISR => {
+                self.acknowledge_fma_isr();
+            }
+            _ => {}
+        }
+    }
+
+    pub fn handle_fmv_write(&mut self, offset: usize) {
+        let value = self.get_fmv_word(offset);
+        match offset {
+            FMV_SYSCMD => {
+                if value & 0x0008 != 0 { // PLAY
+                    self.video_armed = true;
+                    self.video_playing = true;
+                    self.decoder_enabled = true;
+                }
+                if value & 0x0020 != 0 { // CONTINUE
+                    self.video_armed = false;
+                    self.video_playing = true;
+                }
+                if value & 0x0010 != 0 { // PAUSE
+                    self.video_playing = false;
+                    self.or_fmv_word(FMV_ISR, FMV_IRQ_PAI);
+                }
+                if value & 0x0080 != 0 { // STOP
+                    self.video_armed = false;
+                    self.video_playing = false;
+                }
+                if value & 0x0100 != 0 { // RESET
+                    self.video_playing = false;
+                    self.video_armed = false;
+                    self.reset_stream();
+                    self.set_fmv_word(FMV_ISR, 0);
+                }
+                if value & 0x1000 != 0 { // DEC_ON
+                    self.decoder_enabled = true;
+                }
+                if value & 0x2000 != 0 { // DEC_OFF
+                    self.decoder_enabled = false;
+                    self.video_playing = false;
+                }
+                if value & 0x8000 != 0 { // DMA request Video
+                    self.dma_requested = true;
+                    self.transfer_for_fma = false;
+                }
+            }
+            FMV_VIDCMD => {
+                if value & 0x0004 != 0 || value & 0x0008 != 0 {
+                    self.or_fmv_word(FMV_ISR, FMV_IRQ_VCUP | FMV_IRQ_DCL);
+                }
+            }
+            FMV_STREAM => {
+                self.demux.selected_video_stream = Some((value & 0x0F) as u8);
+            }
+            FMV_ISR => {
+                self.acknowledge_fmv_isr();
+            }
+            FMV_TIMER => {
+                self.timer_counter = 0;
+            }
+            FMV_XFER => {
+                self.push_stream_byte((value >> 8) as u8);
+                self.push_stream_byte(value as u8);
+            }
+            _ => {}
+        }
+    }
+
+    pub fn push_stream_byte(&mut self, byte: u8) {
+        if self.dvc_stream_fifo.len() < 1024 * 1024 {
+            self.dvc_stream_fifo.push(byte);
+        }
+    }
+
+    pub fn process_stream(&mut self) {
+        if !self.dvc_stream_fifo.is_empty() {
+            let bytes = std::mem::take(&mut self.dvc_stream_fifo);
+            self.demux.feed(&bytes);
+        }
+
+        // Process audio stream
+        if !self.demux.audio.is_empty() {
+            let decoded = self.mp2.decode_available(&mut self.demux.audio);
+            if decoded != 0 {
+                self.or_fma_word(0x02, 0x0004);
+                self.or_fma_word(FMA_ISR, 0x0004);
+                while self.mp2.pcm.len() >= 2 {
+                    let l = self.mp2.pcm.pop_front().unwrap_or(0);
+                    let r = self.mp2.pcm.pop_front().unwrap_or(0);
+                    if self.audio_out.len() < 32 * 1024 {
+                        self.audio_out.push_back((l as f32 / 32768.0, r as f32 / 32768.0));
+                    }
+                }
+            }
+        }
+
+        // Process video stream
+        if !self.demux.video.is_empty() {
+            let video_data = std::mem::take(&mut self.demux.video);
+            if self.video_decoder.is_none() {
+                trace!(">>> [DVC] INITIALIZING VIDEO DECODER WITH FIRST PACKET (len={})", video_data.len());
+                self.video_decoder = Some(Video::new(video_data));
+            } else {
+                self.video_decoder.as_mut().unwrap().append(&video_data);
+            }
+        }
+
+        // Check for program end (code 0xB9 in MPEG pack/system streams marks segment/program boundaries)
+        if self.demux.program_ends > 0 {
+            self.or_fmv_word(FMV_ISR, FMV_IRQ_EII | FMV_IRQ_ESI);
+            self.or_fma_word(FMA_ISR, FMA_IRQ_EOI);
+            self.demux.program_ends = 0;
+        }
+
+        // Update DTS if newly available
+        if let Some(dts) = self.demux.last_video_dts {
+            self.set_fmv_word(0xA0, ((dts >> 7) & 0x7FFF) as u16); // word 0x50
+            self.or_fmv_word(0x8C, 0x4000);                         // word 0x46 bit 14
+        }
+    }
+
+    pub fn advance_display_timecode(&mut self) {
+        self.display_frame_counter += 1;
+        let fps = if self.fps > 0.0 { self.fps.round() as u32 } else { 25 };
+        let pictures = self.display_frame_counter % fps;
+        let total_sec = self.display_frame_counter / fps;
+        let seconds = total_sec % 60;
+        let total_min = total_sec / 60;
+        let minutes = total_min % 60;
+        let hours = (total_min / 60) % 24;
+        self.display_timecode = ((hours & 0x1F) << 22) | ((minutes & 0x3F) << 16) | ((seconds & 0x3F) << 6) | (pictures & 0x3F);
+
+        self.set_fmv_word(0x58, (self.display_timecode >> 16) as u16); // word 0x2C
+        self.set_fmv_word(0x5A, self.display_timecode as u16);          // word 0x2D
+    }
+
+    pub fn advance_decoder_timecode(&mut self) {
+        self.decoder_frame_counter += 1;
+        let fps = if self.fps > 0.0 { self.fps.round() as u32 } else { 25 };
+        let pictures = self.decoder_frame_counter % fps;
+        let total_sec = self.decoder_frame_counter / fps;
+        let seconds = total_sec % 60;
+        let total_min = total_sec / 60;
+        let minutes = total_min % 60;
+        let hours = (total_min / 60) % 24;
+        self.decoder_timecode = ((hours & 0x1F) << 22) | ((minutes & 0x3F) << 16) | ((seconds & 0x3F) << 6) | (pictures & 0x3F);
+
+        self.set_fmv_word(0x08, (self.decoder_timecode >> 16) as u16); // word 0x04
+        self.set_fmv_word(0x0A, self.decoder_timecode as u16);          // word 0x05
+    }
+
+    pub fn on_vsync(&mut self) {
+        self.process_stream();
+
+        // Always raise VSYNC in ISR on every vertical blank interval (matches hardware VMPEG ASIC)
+        self.or_fmv_word(FMV_ISR, FMV_IRQ_VSYNC);
+
+        self.vsync_counter += 1;
+
+        if let Some(ref d) = self.video_decoder {
+            if d.framerate() > 0.0 {
+                self.fps = d.framerate();
+            }
+        }
+
+        // Present video every 2 fields (25 fps on 50 Hz PAL)
+        if self.vsync_counter % 2 == 0 {
+            let mut decoded_w = 0;
+            let mut decoded_h = 0;
+            let mut got_frame = false;
+            if let Some(ref mut decoder) = self.video_decoder {
+                if let Some(frame_idx) = decoder.decode() {
+                    self.frames_decoded_count += 1;
+                    self.frames_presented_count += 1;
+                    if self.frames_decoded_count % 30 == 1 {
+                        trace!(">>> [DVC] DECODED MPEG FRAME #{} (idx={})", self.frames_decoded_count, frame_idx);
+                    }
+                    decoded_w = decoder.width();
+                    decoded_h = decoder.height();
+                    let target_w = (decoded_w as usize).min(352).max(1);
+                    let target_h = (decoded_h as usize).min(288).max(1);
+                    decoder.frame(frame_idx).write_rgb_scaled(&mut *self.framebuffer, target_w, target_h);
+                    self.video_width = target_w;
+                    self.video_height = target_h;
+                    got_frame = true;
+                }
+            }
+
+            if got_frame {
+                self.underflow_count = 0;
+                // Update frame geometry & timing registers
+                self.set_fmv_word(0x02, decoded_w as u16);
+                self.set_fmv_word(0x04, decoded_h as u16);
+                self.set_fmv_word(0x52, decoded_w as u16);
+                self.set_fmv_word(0x54, decoded_h as u16);
+                self.set_fmv_word(0x06, 0x23);  // PRPA
+                self.set_fmv_word(0x56, 1800);  // Frame rate ratio
+                self.set_fmv_word(0x55, 1800);  // Display period
+
+                // Advance timecodes
+                self.advance_display_timecode();
+                self.advance_decoder_timecode();
+
+                // Display status: active picture
+                self.set_fmv_word(0x5C, 0x0001);
+
+                // Set FMV ISR bits
+                self.or_fmv_word(FMV_ISR, FMV_IRQ_PIC);
+                if self.frames_presented_count == 1 {
+                    self.or_fmv_word(FMV_ISR, FMV_IRQ_SEQ | FMV_IRQ_GOP);
+                } else if self.frames_presented_count % 12 == 1 {
+                    self.or_fmv_word(FMV_ISR, FMV_IRQ_GOP);
+                }
+            } else if self.frames_decoded_count > 0 && (self.video_playing || self.video_armed) {
+                let sequence_ended = self
+                    .video_decoder
+                    .as_mut()
+                    .map_or(false, |d| d.take_sequence_end());
+                let buffer_drained = self.dvc_stream_fifo.is_empty()
+                    && self.demux.video.is_empty()
+                    && self.video_decoder.as_ref().map_or(true, |d| d.is_buffer_empty());
+
+                self.underflow_count = self.underflow_count.saturating_add(1);
+
+                if sequence_ended || (buffer_drained && self.underflow_count >= 6) {
+                    // Stream finished: either explicit sequence_end_code (0xB7)
+                    // or complete FIFO/demux/bitstream buffer drain after presenting frames.
+                    trace!(">>> [DVC] END OF SEQUENCE / DRAIN after {} frames (underflow={})", self.frames_decoded_count, self.underflow_count);
+                    self.or_fmv_word(FMV_ISR, FMV_IRQ_EOD | FMV_IRQ_ESI);
+                    self.or_fma_word(FMA_ISR, FMA_IRQ_EOI);
+                    self.set_fmv_word(0x5C, 0x0000); // Return display status to idle
+                    self.video_playing = false;
+                    self.video_armed = false;
+                    self.decoder_enabled = false;
+                    self.audio_enabled = false;
+                    self.audio_armed = false;
+                    self.underflow_count = 0;
+                } else {
+                    // Temporary buffer underflow while waiting for CDIC stream:
+                    // signal NDAT (No Data) only; the sequence is not over yet.
+                    self.or_fmv_word(FMV_ISR, FMV_IRQ_NDAT);
+                }
+            }
+        }
+    }
+
+    pub fn read_ram1(&self, offset: usize) -> u8 {
+        self.ram1[offset & 0xFFFFF]
+    }
+
+    pub fn write_ram1(&mut self, offset: usize, val: u8) {
+        self.ram1[offset & 0xFFFFF] = val;
+    }
+
+    pub fn read_ram2(&self, offset: usize) -> u8 {
+        if self.ram2_enabled {
+            self.ram2[offset & 0x7FFFF]
+        } else {
+            0x00
+        }
+    }
+
+    pub fn write_ram2(&mut self, offset: usize, val: u8) {
+        if self.ram2_enabled {
+            self.ram2[offset & 0x7FFFF] = val;
+        }
+    }
+
+    pub fn read_rom(&mut self, offset: usize) -> u8 {
+        self.rom_read_count += 1;
+        if let Some(ref rom) = self.rom {
+            rom[offset % rom.len()]
+        } else {
+            0xFF
+        }
+    }
+
+    pub fn get_scanline(&self, active_line: usize, out: &mut [u32; 768]) {
+        out.fill(0xFF00_0000);
+        let disp_h = (self.get_fmv_word(0x04) as usize).min(288);
+        let disp_h = if disp_h == 0 { 240 } else { disp_h };
+        let reg_y = self.get_fmv_word(0x6C) as usize;
+        // If register 0x6C is at default (26) or not explicitly configured, center vertically
+        let y_start = if reg_y > 0 && reg_y != 26 && reg_y <= 240 {
+            reg_y
+        } else {
+            (240usize.saturating_sub(disp_h)) / 2
+        };
+        let y_end = y_start + disp_h;
+        if active_line >= y_start && active_line < y_end {
+            let dy = active_line - y_start;
+            let disp_w = (self.get_fmv_word(0x02) as usize).min(352);
+            let disp_w = if disp_w == 0 { 352 } else { disp_w };
+            let pitch = if self.video_width > 0 { self.video_width } else { disp_w };
+            let x_start = (768usize.saturating_sub(disp_w * 2)) / 2;
+            for dx in 0..disp_w {
+                let px_idx = dy * pitch + dx;
+                let pixel = if self.frames_decoded_count > 0 && px_idx < self.framebuffer.len() {
+                    self.framebuffer[px_idx]
+                } else if px_idx < self.framebuffer.len() && self.framebuffer[px_idx] != 0xFF00_0000 {
+                    self.framebuffer[px_idx]
+                } else if self.ram2_enabled {
+                    let b_idx = (px_idx * 2) & 0x7FFFE;
+                    let w = ((self.ram2[b_idx] as u16) << 8) | (self.ram2[b_idx + 1] as u16);
+                    if w != 0 {
+                        let r = (((w >> 10) & 0x1F) as u32) << 3;
+                        let g = (((w >> 5) & 0x1F) as u32) << 3;
+                        let b = ((w & 0x1F) as u32) << 3;
+                        0xFF00_0000 | (r << 16) | (g << 8) | b
+                    } else {
+                        0xFF00_0000
+                    }
+                } else {
+                    0xFF00_0000
+                };
+                let target_x = x_start + dx * 2;
+                if target_x + 1 < 768 {
+                    out[target_x] = pixel;
+                    out[target_x + 1] = pixel;
+                }
+            }
+        }
+    }
+}

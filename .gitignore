@@ -1,0 +1,10 @@
+/target
+*.log
+*.bmp
+*.ppm
+*.txt
+!Cargo.lock
+*.exe
+/builds
+/screenshots_hotel_mario
+/traces
