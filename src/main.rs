@@ -733,31 +733,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let mut pad_dir_x = 0;
                     let mut pad_dir_y = 0;
 
-                    // 1. D-Pad buttons
-                    if gamepad.is_pressed(gilrs::Button::DPadUp) { pad_dir_y -= 1; }
-                    if gamepad.is_pressed(gilrs::Button::DPadDown) { pad_dir_y += 1; }
-                    if gamepad.is_pressed(gilrs::Button::DPadLeft) { pad_dir_x -= 1; }
-                    if gamepad.is_pressed(gilrs::Button::DPadRight) { pad_dir_x += 1; }
+                    // 1. D-Pad buttons (highest priority)
+                    if gamepad.is_pressed(gilrs::Button::DPadUp) { pad_dir_y = -1; }
+                    else if gamepad.is_pressed(gilrs::Button::DPadDown) { pad_dir_y = 1; }
 
-                    // 2. D-Pad axes (for gamepads where D-Pad is reported as Hat/Axis)
-                    let dpx = gamepad.value(gilrs::Axis::DPadX);
-                    let dpy = gamepad.value(gilrs::Axis::DPadY);
-                    if dpx < -0.4 { pad_dir_x -= 1; }
-                    else if dpx > 0.4 { pad_dir_x += 1; }
-                    if dpy > 0.4 { pad_dir_y -= 1; }
-                    else if dpy < -0.4 { pad_dir_y += 1; }
+                    if gamepad.is_pressed(gilrs::Button::DPadLeft) { pad_dir_x = -1; }
+                    else if gamepad.is_pressed(gilrs::Button::DPadRight) { pad_dir_x = 1; }
 
-                    // 3. Left Analog Stick (with deadzone 0.35)
-                    // Analog stick is checked only if D-pad is not actively pressed in that axis
+                    // 2. D-Pad axes (for gamepads where D-Pad is reported as Hat/Axis, only if button not pressed)
+                    if pad_dir_x == 0 {
+                        let dpx = gamepad.value(gilrs::Axis::DPadX);
+                        if dpx < -0.4 { pad_dir_x = -1; }
+                        else if dpx > 0.4 { pad_dir_x = 1; }
+                    }
+                    if pad_dir_y == 0 {
+                        let dpy = gamepad.value(gilrs::Axis::DPadY);
+                        if dpy > 0.4 { pad_dir_y = -1; }
+                        else if dpy < -0.4 { pad_dir_y = 1; }
+                    }
+
+                    // 3. Left Analog Stick (with deadzone 0.35, only if D-pad is neutral on that axis)
                     if pad_dir_x == 0 {
                         let lx = gamepad.value(gilrs::Axis::LeftStickX);
-                        if lx < -0.35 { pad_dir_x -= 1; }
-                        else if lx > 0.35 { pad_dir_x += 1; }
+                        if lx < -0.35 { pad_dir_x = -1; }
+                        else if lx > 0.35 { pad_dir_x = 1; }
                     }
                     if pad_dir_y == 0 {
                         let ly = gamepad.value(gilrs::Axis::LeftStickY);
-                        if ly > 0.35 { pad_dir_y -= 1; }
-                        else if ly < -0.35 { pad_dir_y += 1; }
+                        if ly > 0.35 { pad_dir_y = -1; }
+                        else if ly < -0.35 { pad_dir_y = 1; }
                     }
 
                     if pad_dir_x != 0 {

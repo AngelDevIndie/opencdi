@@ -1082,20 +1082,15 @@ impl Mcd212 {
             let mut pb = if mosaic_b { plane_b[x - (x % mosaic_count_b)] } else { plane_b[x] };
 
             if transparent_a[x] {
-                out[x] = pb;
-                continue;
-            }
-            if transparent_b[x] {
-                out[x] = pa;
-                continue;
+                pa = self.s_4bpp_color[0];
+            } else if order_ab && (self.transparency_control & TCR_DISABLE_MX != 0) {
+                pb = self.s_4bpp_color[0];
             }
 
-            if order_ab && (self.transparency_control & TCR_DISABLE_MX != 0) {
-                out[x] = pa;
-                continue;
+            if transparent_b[x] {
+                pb = self.s_4bpp_color[0];
             } else if !order_ab && (self.transparency_control & TCR_DISABLE_MX != 0) {
-                out[x] = pb;
-                continue;
+                pa = self.s_4bpp_color[0];
             }
 
             let plane_a_r = ((pa >> 16) & 0xFF) as i32;
