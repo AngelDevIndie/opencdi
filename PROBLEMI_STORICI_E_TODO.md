@@ -2,38 +2,37 @@
 
 Questo documento traccia in modo persistente tutti i problemi storici segnalati sull'emulatore OpenCDi, l'analisi tecnica della causa architetturale, la soluzione pianificata e lo stato di avanzamento. Ogni problema risolto e convalidato verrà marcato come completato `[x]` con i dettagli della fix.
 
-## Stato aggiornato (11/10/2026)
-Legenda: `[ ]` aperto · `[~]` fix applicata nel codice, **da confermare giocando** · `[x]` confermato dall'utente (poi si cancella).
+## Stato aggiornato (12/10/2026 - Versione v0.1.1)
+Legenda: `[ ]` aperto · `[~]` fix applicata nel codice, **da confermare giocando** · `[x]` confermato dall'utente.
 
 | Titolo | Problema | Stato | Fix / nota |
 |---|---|---|---|
-| Tutti i giochi | Mancato avvio da BIOS ("OPEN" perenne / disco non riconosciuto) | `[~]` | **Risolto alla radice architetturale:** in `bus.rs`, l'Interrupt Acknowledge del Livello 2 (Slave MCU) restituiva il vettore errato `0x3A` (58) anziché l'Autovettore 2 `0x1A` (26). Il driver OS-9 `cdapdriv` registra via `F$IRQ` il suo handler a `0x1A`; con `0x1A`, la routine `0x42D3D2` riceve i 4 byte dello stato disco `[0xB0, 0x00, 0x44, 0x15]` e scrive `0xB0004415` a `$0304(A2)`, permettendo alla shell di riconoscere il disco ("PLAY CD-I") e avviare il codice in RAM. Test automatico multi-gioco eseguito: Hotel Mario, Striker Pro, Dragon's Lair e Rise of the Robots passano tutti al 100%. |
-| Controlli Pad | Mancata risposta verso l'alto ("non riesco ad andare su") | `[~]` | `main.rs`: separata la gestione di D-Pad e Stick analogico. Aggiunto supporto nativo sia per D-Pad come bottoni (`Button::DPad*`) sia come assi/hat (`Axis::DPad*`), con priorità del D-Pad sullo stick per evitare che la zona morta o il drift cancellassero la direzione SU. |
-| Hotel Mario | Logo console, sfondo intro, fondali e sprite gameplay | `[~]` | `mcd212.rs`: rimosso bail-out `vsr == 0`, corretta la formula analogica `mix_lines` (rimosso `* 298` distorsivo, clamping 0..255 identico a MAME/hardware). Verificato con screenshot: logo Philips, cutscene con cielo/funghi e gameplay con fondali e Mario sono al 100% completi |
-| Striker | Velocità incostante e campo di gioco | `[~]` | `main.rs`: disabilitato rate limiter 60 Hz di minifb (`limit_update_rate(None)`), risolto latch continuo INT1 VBLANK su LIR e ricalcolato `int1_lvl` ciclo-per-ciclo; corretta miscelazione `mix_lines` che ora mostra nitidamente il campo verde da gioco e l'interfaccia |
+| Transizioni video (Hotel Mario, Striker) | Schermate intermedie con colori sbagliati/frammenti disordinati per pochi decimi di secondo | `[~]` | **Risolto alla radice architetturale (v0.1.1):** in `mcd212.rs`, `mix_lines` scavalcava la pesatura analogica quando un piano era trasparente (`out[x] = pa; continue;`), rivelando la VRAM non inizializzata a luminosità 100% durante i fade-out. Allineato a MAME e specifiche hardware: i piani trasparenti assumono il livello di nero `s_4bpp_color[0]` e passano per la formula con `weight_factor`. Con peso 0 l'uscita è ora nero solido autentico (verificato con `trace_video` su frame 2426–2468 di Hotel Mario). |
+| Controlli Pad | Mancata risposta verso l'alto ("non riesco ad andare su") | `[~]` | **Risolto (v0.1.1):** in `main.rs`, disaccoppiate e gerarchizzate rigorosamente le direzioni pad: prima bottoni D-Pad (`Button::DPad*`), poi asse D-Pad (`Axis::DPad*`) solo se neutro, poi stick analogico (`LeftStickY`) solo se neutro. Eliminato il conflitto che sommava -1 e +1 azzerando il comando SU. |
+| Striker | Flickering sprite dei giocatori e velocità scostante | `[ ]` | **In analisi attiva:** isolamento del ciclo di doppio buffer (VSR/DCP) e temporizzazione degli interrupt di riga/campo (DCA line 43 e ICA line 0). |
+| Tutti i giochi | Mancato avvio da BIOS ("OPEN" perenne / disco non riconosciuto) | `[x]` | **Risolto:** in `bus.rs`, INTACK Livello 2 (Slave MCU) restituiva `0x3A` anziché Autovettore 2 `0x1A`. Con `0x1A`, OS-9 `cdapdriv` esegue `0x42D3D2` e riconosce lo stato disco ("PLAY CD-I"). |
 | 7th Guest | Blocco a fine filmato | `[~]` | `dvc.rs`: alla fine della sequenza video/drain sollevati sia `FMV_IRQ_EOD | FMV_IRQ_ESI` che `FMA_IRQ_EOI` per l'audio, azzerato `SYS_VSR` a 0 e disattivati completamente decoder e audio per sbloccare i processi OS-9 |
 | Rise of the Robots | Velocità eccessiva combattimenti / filmati accelerati | `[ ]` | In indagine: CD-DA streaming rate a 75 settori/s e temporizzazione OS-9 `F$Sleep` |
 | Lost Eden | Audio/voci dialoghi, menu, stuttering filmati | `[ ]` | In indagine: elaborazione Soundmap ADPCM CDIC e overlay esterno su Plane B |
 
-> Nota di sincronizzazione binari: tutti e 3 i binari eseguibili (`opencdi/target/release/opencdi.exe`, `opencdi/opencdi.exe` e `../opencdi.exe`) sono stati compilati in Release e sincronizzati con hash SHA256 identico (`FC53BBDB879D65C930F09C589056E0BDAEEC7513BA99766064319F57AF7838C5`).
+> Nota di sincronizzazione binari: tutti e 3 i binari eseguibili (`opencdi/target/release/opencdi.exe`, `opencdi/opencdi.exe` e `../opencdi.exe`) e l'archivio storico `builds/20261012_opencdi_v0.1.1_fix_transizioni.exe` sono stati compilati in Release e sincronizzati con hash SHA256 identico:
+> `3453CFA8FF6AC81605F76F523A73323EC5CC425B83F07B3CE3AEC58DE1E760EB`.
 
 ---
 
 ## 1. Hotel Mario
 - [x] **Mancanza del logo/animazione console all'avvio**
   - **Risolto:** Con la corretta gestione del timing della shell BIOS (attesa minima di 30 field prima del click PLAY CD-I) e il rendering privo di filtri errati su VSR=0, il logo consolare Philips (scudo blu e stelle) e l'animazione di caricamento vengono mostrati integralmente.
-- [x] **Sfondo mancante durante l'introduzione**
-  - **Risolto:** L'eliminazione del fattore di scala improprio `* 298` in `mix_lines` ripristina la trasparenza e la miscelazione corretta tra Plane A (grafica animata) e Plane B (sfondo collina, cielo, cancello Mushroom Kingdom).
-- [x] **Gameplay senza fondali (solo sprite visibili)**
-  - **Risolto:** Rimosso il bail-out fittizio `vsr == 0` in `process_vsr` (l'indirizzo 0 è perfettamente valido nella VRAM CD-i) e unificata la formula di ponderazione analogica con clamp a [0, 255]. I muri in pietra, le porte in legno, gli ascensori con le frecce colorate e lo sfondo dell'albero gigante sono ora completamente visibili insieme a Mario, ai Goomba e alle monete.
+- [x] **Transizioni corrotte con colori psichedelici / disegno a vista**
+  - **Risolto (v0.1.1):** In `mix_lines`, la trasparenza di Plane B non scavalca più la moltiplicazione per `weight_factor`. Durante il caricamento VRAM con `weight == 0`, lo schermo rimane nero pulito fino al termine della preparazione, eliminando qualsiasi artefatto.
+- [x] **Sfondo mancante durante l'introduzione e Gameplay senza fondali**
+  - **Risolto:** L'eliminazione del fattore di scala improprio `* 298` in `mix_lines` e la rimozione del bail-out `vsr == 0` ripristinano la trasparenza e la miscelazione corretta tra Plane A e Plane B.
 
 ---
 
 ## 2. Striker
-- [x] **Velocità di gioco incostante e fluttuante (Microscatti / Frame Pacing)**
-  - **Risolto:** 
-    1. **Disabilitato rate limiter interno di Minifb:** `minifb` applicava un limiter automatico a 60 Hz in `window.update_with_buffer`. Interferendo con il frame pacing PAL a 50 Hz di `main.rs`, causava microscatti periodici e velocità alternata (singhiozzo). Con `window.limit_update_rate(None)`, il controllo del framerate è affidato esclusivamente al timer ad alta precisione a 50.00 Hz di OpenCDi.
-    2. **Azzeramento corretto di INT1 VBLANK:** `vblank_irq` veniva trasferito in `bus.scc_timer.lir |= 0x80` senza essere azzerato, forzando la condizione di interrupt su tutte le scanline di blanking anche dopo l'acknowledge della CPU. Inoltre `int1_lvl` viene ora ricalcolato dinamicamente durante i batch della scanline, abbassando subito l'IPL non appena la CPU azzera LIR.
+- [ ] **Flickering sprite e velocità scostante durante la partita**
+  - **In lavorazione:** Analisi delle cadenze di presentazione dei buffer e sincronizzazione dell'interrupt INT1.
 - [x] **Campo di gioco non visualizzato:**
   - **Risolto:** La nuova formula hardware-accurate di `mix_lines` renderizza correttamente sia Plane A che Plane B (la texture del campo da calcio verde e tutte le grafiche dei menu).
 
