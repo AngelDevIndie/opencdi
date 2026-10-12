@@ -96,7 +96,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     cpu.set_cpu_type(CpuType::SCC68070);
     cpu.reset(&mut bus);
 
-    bus.watch_addr1 = 0x0027CC58;
+    bus.watch_addr1 = 0x004FFFE4;
     bus.watch_addr2 = 0x00012671;
     bus.watch_enabled = true;
 
@@ -107,7 +107,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cyc_per_line = bus.mcd212.video_mode.cycles_per_scanline();
 
     let mut shell_ready = 0;
-    for frame in 1..=5600 {
+    for frame in 1..=8500 {
         let play_a6 = 0x0000C000u32;
         let state_9172 = bus.read_long(play_a6.wrapping_add(0xFFFF9172));
 
@@ -137,13 +137,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             bus.slave.update_mouse(384, 280, 0);
         }
 
-        // Click ENGLISH on Language Screen at frame 4600
-        if frame == 4600 {
+        // Click ENGLISH on Language Screen at frame 5100 and 5200
+        if frame == 5100 || frame == 5200 {
             println!(">>> [Frame {}] Clicking ENGLISH at (384, 180)...", frame);
             bus.slave.update_mouse(384, 180, 1);
         }
-        if frame == 4620 {
+        if frame == 5120 || frame == 5220 {
             bus.slave.update_mouse(384, 180, 0);
+        }
+
+        // Advance menus (e.g. Kick Off)
+        if frame == 5600 || frame == 5900 || frame == 6200 {
+            println!(">>> [Frame {}] Menu confirm click at (384, 280)...", frame);
+            bus.slave.update_mouse(384, 280, 1);
+        }
+        if frame == 5620 || frame == 5920 || frame == 6220 {
+            bus.slave.update_mouse(384, 280, 0);
+        }
+
+        // Click PLAY on match configuration tape deck at (384, 220)
+        if frame == 7100 || frame == 7200 {
+            println!(">>> [Frame {}] Clicking PLAY on tape deck at (384, 220)...", frame);
+            bus.slave.update_mouse(384, 220, 1);
+        }
+        if frame == 7120 || frame == 7220 {
+            bus.slave.update_mouse(384, 220, 0);
         }
 
         if frame % 250 == 0 && frame >= 4000 {
@@ -300,6 +318,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             cycle_debt = (line_cycles - cyc_per_line as i32).clamp(0, 100);
+            bus.render_scanline(line);
 
             let cur_val = bus.read_byte(0x00012671);
             if cur_val == 0xFF && prev_watch_val != 0xFF {

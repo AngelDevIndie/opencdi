@@ -178,6 +178,8 @@ impl CdiBus {
             self.current_frame += 1;
         }
         let frame_done = self.mcd212.tick_scanline(line);
+        let mcd_int = (self.mcd212.csrr[1] & (crate::mcd212::CSR2R_IT1 | crate::mcd212::CSR2R_IT2)) != 0;
+        self.scc_timer.int1_w(mcd_int);
         if line == 0 && self.dvc.is_fitted() {
             self.dvc.on_vsync();
         }
@@ -188,6 +190,11 @@ impl CdiBus {
             }
         }
         frame_done
+    }
+
+    #[inline(always)]
+    pub fn render_scanline(&mut self, line: usize) {
+        self.mcd212.render_line(line);
     }
 
     pub fn perform_dvc_dma(&mut self) {
@@ -341,6 +348,8 @@ impl AddressBus for CdiBus {
                 let offset = addr - 0x4FFFE0;
                 let reg_base = offset & !1;
                 let word = self.mcd212.read_reg(reg_base);
+                let mcd_int = (self.mcd212.csrr[1] & (crate::mcd212::CSR2R_IT1 | crate::mcd212::CSR2R_IT2)) != 0;
+                self.scc_timer.int1_w(mcd_int);
                 if (addr & 1) == 0 { (word >> 8) as u8 } else { word as u8 }
             }
 
@@ -445,7 +454,10 @@ impl AddressBus for CdiBus {
             }
             0x4FFFE0..=0x4FFFFF => {
                 let offset = (addr - 0x4FFFE0) & !1;
-                self.mcd212.read_reg(offset)
+                let word = self.mcd212.read_reg(offset);
+                let mcd_int = (self.mcd212.csrr[1] & (crate::mcd212::CSR2R_IT1 | crate::mcd212::CSR2R_IT2)) != 0;
+                self.scc_timer.int1_w(mcd_int);
+                word
             }
             0xD00000..=0xDFFFFE => {
                 if self.dvc.is_fitted() {

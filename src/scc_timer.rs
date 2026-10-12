@@ -26,6 +26,7 @@ pub struct SccTimer {
     pub picr1: u8,     // 0x80002045: Peripheral Interrupt Control Register 1
     pub picr2: u8,     // 0x80002047: Peripheral Interrupt Control Register 2
     pub lir: u8,       // 0x80001001: Line Interrupt Register (INT1 / INT2 control & status)
+    pub int1_line: bool, // Physical INT1 line level from MCD212
     pub timer_irq: bool,
     cycle_accum: u32,
 }
@@ -42,6 +43,7 @@ impl SccTimer {
             picr1: 0,
             picr2: 0,
             lir: 0,
+            int1_line: false,
             timer_irq: false,
             cycle_accum: 0,
         }
@@ -215,6 +217,15 @@ impl SccTimer {
             self.lir |= 0x80;
         } else {
             self.lir &= 0x7F;
+        }
+    }
+
+    pub fn int1_w(&mut self, state: bool) {
+        if self.int1_line != state {
+            if state && (self.lir & 0x80) == 0 {
+                self.lir |= 0x80;
+            }
+            self.int1_line = state;
         }
     }
 }

@@ -376,8 +376,8 @@ impl Mcd212 {
     /// based on hardware bus arbitration between CPU and MCD-212 display scanout.
     #[inline(always)]
     pub fn ram_dtack_cycles<const PATH: usize>(&self, line_cycle: u32) -> u32 {
-        // No contending for Ch.1/Ch.2 timing slots if display is disabled
-        if (self.dcr[0] & DCR_DE_BIT) == 0 {
+        // No contending for Ch.1/Ch.2 timing slots if display is disabled or during VBLANK (display inactive)
+        if (self.dcr[0] & DCR_DE_BIT) == 0 || (self.csrr[0] & CSR1R_DA) == 0 {
             return 0;
         }
 
@@ -659,7 +659,20 @@ impl Mcd212 {
             if (self.dcr[0] & DCR_DCA_BIT) != 0 {
                 self.process_dca::<0>();
             }
+        } else {
+            // VBLANK lines
+            self.csrr[0] &= !CSR1R_DA;
+        }
 
+        frame_completed
+    }
+
+    pub fn render_line(&mut self, line: usize) {
+        let total_lines = self.video_mode.total_scanlines();
+        let vblank_lines = self.video_mode.vblank_lines();
+        let active_lines = self.video_mode.active_scanlines();
+
+        if line >= vblank_lines && line < total_lines {
             let active_line = line - vblank_lines;
             if active_line < active_lines {
                 self.render_scanline(active_line);
@@ -668,12 +681,7 @@ impl Mcd212 {
             if line == total_lines - 1 {
                 self.csrr[0] ^= CSR1R_PA;
             }
-        } else {
-            // VBLANK lines
-            self.csrr[0] &= !CSR1R_DA;
         }
-
-        frame_completed
     }
 
     pub fn tick_cycles(&mut self, cycles: u32) -> bool {

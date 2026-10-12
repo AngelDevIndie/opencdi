@@ -211,6 +211,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             cycle_debt = (line_cycles - cyc_per_line as i32).clamp(0, 100);
+            bus.render_scanline(line);
             bus.tick_slave(cyc_per_line);
             bus.tick_cdic(cyc_per_line);
             bus.tick_dvc(cyc_per_line);
