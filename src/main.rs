@@ -326,7 +326,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut prev_instructions: u64 = 0;
     let mut prev_cd_sectors: u32 = 0;
-    let mut prev_vsr0 = bus.mcd212.get_vsr::<0>();
+    let mut prev_vsr = (bus.mcd212.get_vsr::<0>(), bus.mcd212.get_vsr::<1>());
     let mut buffer_flips_interval: u32 = 0;
     let mut measured_render_fps: f64 = 0.0;
     let mut measured_mips: f64 = 0.0;
@@ -610,9 +610,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             bus.tick_dvc(cyc_per_line);
         }
 
-        let curr_vsr0 = bus.mcd212.get_vsr::<0>();
-        if curr_vsr0 != prev_vsr0 {
-            prev_vsr0 = curr_vsr0;
+        let curr_vsr = (bus.mcd212.get_vsr::<0>(), bus.mcd212.get_vsr::<1>());
+        if curr_vsr != prev_vsr {
+            prev_vsr = curr_vsr;
             buffer_flips_interval += 1;
         }
 
