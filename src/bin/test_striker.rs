@@ -107,7 +107,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cyc_per_line = bus.mcd212.video_mode.cycles_per_scanline();
 
     let mut shell_ready = 0;
-    for frame in 1..=8500 {
+    for frame in 1..=9500 {
         let play_a6 = 0x0000C000u32;
         let state_9172 = bus.read_long(play_a6.wrapping_add(0xFFFF9172));
 
@@ -137,34 +137,61 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             bus.slave.update_mouse(384, 280, 0);
         }
 
-        // Click ENGLISH on Language Screen at frame 5100 and 5200
-        if frame == 5100 || frame == 5200 {
+        // Language Screen appears ~5500: click ENGLISH at (384, 180)
+        if frame == 5600 {
             println!(">>> [Frame {}] Clicking ENGLISH at (384, 180)...", frame);
             bus.slave.update_mouse(384, 180, 1);
         }
-        if frame == 5120 || frame == 5220 {
+        if frame == 5620 {
             bus.slave.update_mouse(384, 180, 0);
         }
 
-        // Advance menus (e.g. Kick Off)
-        if frame == 5600 || frame == 5900 || frame == 6200 {
-            println!(">>> [Frame {}] Menu confirm click at (384, 280)...", frame);
-            bus.slave.update_mouse(384, 280, 1);
+        // Main mode select appears ~5750: click Friendly match (gloves) at (600, 160)
+        if frame == 5900 {
+            println!(">>> [Frame {}] Clicking Friendly match at (600, 160)...", frame);
+            bus.slave.update_mouse(600, 160, 1);
         }
-        if frame == 5620 || frame == 5920 || frame == 6220 {
-            bus.slave.update_mouse(384, 280, 0);
-        }
-
-        // Click PLAY on match configuration tape deck at (384, 220)
-        if frame == 7100 || frame == 7200 {
-            println!(">>> [Frame {}] Clicking PLAY on tape deck at (384, 220)...", frame);
-            bus.slave.update_mouse(384, 220, 1);
-        }
-        if frame == 7120 || frame == 7220 {
-            bus.slave.update_mouse(384, 220, 0);
+        if frame == 5920 {
+            bus.slave.update_mouse(600, 160, 0);
         }
 
-        if frame % 250 == 0 && frame >= 4000 {
+        // Click green square button at (415, 200) to select ARGENTINA as player team
+        if frame == 7100 {
+            println!(">>> [Frame {}] Clicking GREEN SELECT BUTTON at (415, 200)...", frame);
+            bus.slave.update_mouse(415, 200, 1);
+        }
+        if frame == 7120 {
+            bus.slave.update_mouse(415, 200, 0);
+        }
+
+        // Scroll down at (415, 260)
+        if frame == 7400 {
+            println!(">>> [Frame {}] Scrolling down at (415, 260)...", frame);
+            bus.slave.update_mouse(415, 260, 1);
+        }
+        if frame == 7420 {
+            bus.slave.update_mouse(415, 260, 0);
+        }
+
+        // Select second team at (415, 200)
+        if frame == 7700 {
+            println!(">>> [Frame {}] Clicking GREEN SELECT BUTTON at (415, 200)...", frame);
+            bus.slave.update_mouse(415, 200, 1);
+        }
+        if frame == 7720 {
+            bus.slave.update_mouse(415, 200, 0);
+        }
+
+        // Click table / start icon at (370, 390)
+        if frame == 8100 || frame == 8500 || frame == 8900 {
+            println!(">>> [Frame {}] Clicking table/start at (370, 390)...", frame);
+            bus.slave.update_mouse(370, 390, 1);
+        }
+        if frame == 8120 || frame == 8520 || frame == 8920 {
+            bus.slave.update_mouse(370, 390, 0);
+        }
+
+        if frame % 250 == 0 && frame >= 6500 {
             let _ = save_bmp(&bus, &format!("striker_menu_{}.bmp", frame));
         }
 

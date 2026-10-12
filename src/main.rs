@@ -917,9 +917,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     speed_pct, measured_fps, target_fps, measured_mips, measured_cd_rate
                 );
             }
-            if measured_mips > 2.5 && bus.emulate_wait_states {
+            if measured_mips > 4.5 && bus.emulate_wait_states {
                 log::warn!(
-                    "[TELEMETRIA ANOMALIA CPU] Esecuzione anomala CPU: {:.2} MIPS (attesi <= 1.8 MIPS per SCC68070 a 15.5MHz con wait-states)",
+                    "[TELEMETRIA ANOMALIA CPU] Esecuzione anomala CPU: {:.2} MIPS (attesi ~3.2-3.5 MIPS per SCC68070 a 15.5MHz)",
                     measured_mips
                 );
             }

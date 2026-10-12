@@ -103,20 +103,53 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         for line in 0..total_lines {
             bus.tick_scanline(line);
 
-            if line >= 210 && line <= 214 && frame == 5700 {
-                let dca_addr = (bus.mcd212.dca[0] & 0x0007_FFFC) as usize;
-                println!("  [F5700 L{}] DCA0 at 0x{:06X}:", line, dca_addr);
-                for off in (dca_addr..dca_addr + 32).step_by(4) {
-                    if off + 4 <= bus.mcd212.plane_a.len() {
-                        let cmd = u32::from_be_bytes([
-                            bus.mcd212.plane_a[off],
-                            bus.mcd212.plane_a[off + 1],
-                            bus.mcd212.plane_a[off + 2],
-                            bus.mcd212.plane_a[off + 3],
-                        ]);
-                        let op = (cmd >> 24) as u8;
-                        println!("    0x{:06X}: 0x{:08X} (op=0x{:02X})", off, cmd, op);
-                        if op <= 0x0F || op == 0x30 || op == 0x50 { break; }
+            if frame == 5700 && line == 0 {
+                let dcp0 = (bus.mcd212.get_dcp::<0>() & 0x0007_FFFC) as usize;
+                let dcp1 = (bus.mcd212.get_dcp::<1>() & 0x0007_FFFC) as usize;
+                println!("=== DCA TABLE DUMP Plane A (DCP0=0x{:06X}) ===", dcp0);
+                for row in 0..245 {
+                    let r_addr = dcp0 + row * 64;
+                    let mut instrs = Vec::new();
+                    for off in (r_addr..r_addr + 64).step_by(4) {
+                        if off + 4 <= bus.mcd212.plane_a.len() {
+                            let cmd = u32::from_be_bytes([
+                                bus.mcd212.plane_a[off],
+                                bus.mcd212.plane_a[off + 1],
+                                bus.mcd212.plane_a[off + 2],
+                                bus.mcd212.plane_a[off + 3],
+                            ]);
+                            let op = (cmd >> 24) as u8;
+                            if op != 0x10 { instrs.push((off - r_addr, cmd, op)); }
+                            if op <= 0x0F || op == 0x30 || op == 0x50 { break; }
+                        }
+                    }
+                    if !instrs.is_empty() {
+                        print!("  Row {:3} (0x{:06X}): ", row, r_addr);
+                        for (off, cmd, op) in instrs { print!("[+{:02X}: 0x{:08X} op=0x{:02X}] ", off, cmd, op); }
+                        println!();
+                    }
+                }
+                println!("=== DCA TABLE DUMP Plane B (DCP1=0x{:06X}) ===", dcp1);
+                for row in 0..245 {
+                    let r_addr = dcp1 + row * 64;
+                    let mut instrs = Vec::new();
+                    for off in (r_addr..r_addr + 64).step_by(4) {
+                        if off + 4 <= bus.mcd212.plane_b.len() {
+                            let cmd = u32::from_be_bytes([
+                                bus.mcd212.plane_b[off],
+                                bus.mcd212.plane_b[off + 1],
+                                bus.mcd212.plane_b[off + 2],
+                                bus.mcd212.plane_b[off + 3],
+                            ]);
+                            let op = (cmd >> 24) as u8;
+                            if op != 0x10 { instrs.push((off - r_addr, cmd, op)); }
+                            if op <= 0x0F || op == 0x30 || op == 0x50 { break; }
+                        }
+                    }
+                    if !instrs.is_empty() {
+                        print!("  Row {:3} (0x{:06X}): ", row, r_addr);
+                        for (off, cmd, op) in instrs { print!("[+{:02X}: 0x{:08X} op=0x{:02X}] ", off, cmd, op); }
+                        println!();
                     }
                 }
             }
@@ -147,8 +180,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let batch = cpu.run_for_cycles(&mut bus, budget);
                 let mut batch_cycles = batch.cycles + bus.consume_wait_cycles();
 
-                if frame == 5700 && line >= 211 && line <= 220 {
-                    // Check if CPU wrote to VRAM during this slice
+                if frame == 5700 && line >= 211 && line <= 225 {
+                    if bus.mcd212.plane_a[0x072946] != 0 {
+                        // check if something modified plane_a
+                    }
                 }
 
                 match batch.exit {
@@ -245,8 +280,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("Saved traces/mario_step_{}.bmp", frame);
         }
 
-        if frame == 5850 {
-            println!("Reached frame 5850! Exiting early.");
+        if frame == 5701 {
+            println!("Reached frame 5701! Exiting early.");
             break;
         }
     }
