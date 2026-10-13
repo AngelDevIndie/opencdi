@@ -163,6 +163,7 @@ impl CdiBus {
     pub fn set_video_mode(&mut self, mode: crate::mcd212::VideoMode) {
         self.mcd212.video_mode = mode;
         self.slave.video_mode = mode;
+        self.mcd212.framebuffer.fill(0xFF00_0000);
     }
 
     pub fn tick_scanline(&mut self, line: usize) -> bool {

@@ -202,7 +202,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             || u.contains("DIGITAL VIDEO")
     }
 
-    // 3. Optional Game Disc (from command line argument, or default to Hotel Mario, or None for standalone BIOS)
+    // 3. Optional Game Disc (from command line argument, or None for standalone BIOS)
     let mut current_game_name = "Nessun disco (BIOS Standalone)".to_string();
     let initial_disc = std::env::args().nth(1).and_then(|a| {
         if a == "--bios" || a == "--standalone" {
@@ -213,9 +213,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if p.exists() { Some(p) } else { None }
             })
         }
-    }).or_else(|| {
-        find_file("giochi/Hotel Mario (USA).chd")
-            .or_else(|| find_file("giochi/Rise of the Robots (Europe).chd"))
     });
 
     if let Some(p) = initial_disc {
@@ -236,7 +233,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
 
                 let name_upper = p.to_string_lossy().to_uppercase();
-                let mode = if name_upper.contains("USA") || name_upper.contains("JAPAN") || name_upper.contains("NTSC") || name_upper.contains("(US)") {
+                let mode = if (name_upper.contains("USA") || name_upper.contains("JAPAN") || name_upper.contains("NTSC") || name_upper.contains("(US)")) && !name_upper.contains("STRIKER") {
                     info!("Rilevata immagine disco USA/Giappone: console impostata a NTSC 60 Hz");
                     crate::mcd212::VideoMode::Ntsc
                 } else {
@@ -248,7 +245,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Err(e) => error!("Errore caricamento disco di gioco da {:?}: {:?}", p, e),
         }
     } else {
-        info!("Avvio console in modalità Standalone BIOS (nessun disco inserito)");
+        info!("Avvio console in modalità Standalone BIOS (nessun disco inserito) - Standard PAL 50 Hz");
+        bus.set_video_mode(crate::mcd212::VideoMode::Pal);
     }
 
     // 4. Initialize 68070 CPU Core
@@ -358,7 +356,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
 
                             let name_upper = path.to_string_lossy().to_uppercase();
-                            let mode = if name_upper.contains("USA") || name_upper.contains("JAPAN") || name_upper.contains("NTSC") || name_upper.contains("(US)") {
+                            let mode = if (name_upper.contains("USA") || name_upper.contains("JAPAN") || name_upper.contains("NTSC") || name_upper.contains("(US)")) && !name_upper.contains("STRIKER") {
                                 info!("Rilevata immagine disco USA/Giappone: console impostata a NTSC 60 Hz");
                                 crate::mcd212::VideoMode::Ntsc
                             } else {

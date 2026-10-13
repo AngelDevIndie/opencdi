@@ -364,11 +364,6 @@ impl Mcd212 {
             0x10 => self.csrw[0] = val,
             0x12 => {
                 self.dcr[0] = val;
-                self.video_mode = if (val & DCR_FD_BIT) != 0 {
-                    VideoMode::Ntsc
-                } else {
-                    VideoMode::Pal
-                };
             }
             0x14 => self.vsr[0] = val,
             0x18 => self.ddr[0] = val,

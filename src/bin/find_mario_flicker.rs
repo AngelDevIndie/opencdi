@@ -98,7 +98,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             bus.slave.update_mouse(pad_x, 280, btn);
         }
 
-        bus.mcd212.debug_probe = false;
         bus.watch_addr1 = 0x25200C; // line 194, x=280
         bus.watch_addr2 = 0x25248C; // line 197, x=280
         bus.watch_enabled = frame >= 5793 && frame <= 5798;
