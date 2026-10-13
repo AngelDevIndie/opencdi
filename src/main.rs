@@ -233,7 +233,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
 
                 let name_upper = p.to_string_lossy().to_uppercase();
-                let mode = if (name_upper.contains("USA") || name_upper.contains("JAPAN") || name_upper.contains("NTSC") || name_upper.contains("(US)")) && !name_upper.contains("STRIKER") {
+                let mode = if name_upper.contains("USA") || name_upper.contains("JAPAN") || name_upper.contains("NTSC") || name_upper.contains("(US)") {
                     info!("Rilevata immagine disco USA/Giappone: console impostata a NTSC 60 Hz");
                     crate::mcd212::VideoMode::Ntsc
                 } else {
@@ -356,7 +356,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
 
                             let name_upper = path.to_string_lossy().to_uppercase();
-                            let mode = if (name_upper.contains("USA") || name_upper.contains("JAPAN") || name_upper.contains("NTSC") || name_upper.contains("(US)")) && !name_upper.contains("STRIKER") {
+                            let mode = if name_upper.contains("USA") || name_upper.contains("JAPAN") || name_upper.contains("NTSC") || name_upper.contains("(US)") {
                                 info!("Rilevata immagine disco USA/Giappone: console impostata a NTSC 60 Hz");
                                 crate::mcd212::VideoMode::Ntsc
                             } else {

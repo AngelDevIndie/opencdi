@@ -373,12 +373,52 @@ impl Mcd212 {
         }
     }
 
-    /// Calculates the DTACK delay cycles for VRAM access on Path 0 (Plane A) or Path 1 (Plane B).
-    /// On CD-i hardware with independent DRAM buses and nominal 68000 CPU cycle accounting,
-    /// standard accesses execute with 0 additional wait cycles (preserving authentic ~3.2-3.5 MIPS).
+    /// Calculates the DTACK delay cycles for VRAM access on Path 0 (Plane A) or Path 1 (Plane B)
+    /// based on hardware bus arbitration between CPU and MCD-212 display scanout.
+    /// Per Philips MCD-212 specification, DRAM accesses require 4 master clocks (2 SCC68070 clocks)
+    /// during available system slots, plus additional wait-states when contending with display DMA.
     #[inline(always)]
-    pub fn ram_dtack_cycles<const PATH: usize>(&self, _line_cycle: u32) -> u32 {
-        0
+    pub fn ram_dtack_cycles<const PATH: usize>(&self, line_cycle: u32) -> u32 {
+        // No contending for Ch.1/Ch.2 timing slots if display is disabled or during VBLANK (display inactive)
+        if (self.dcr[0] & DCR_DE_BIT) == 0 || (self.csrr[0] & CSR1R_DA) == 0 {
+            return 2;
+        }
+
+        // No contending for Ch.1/Ch.2 timing slots if a relevant Path is disabled
+        if (self.dcr[PATH] & DCR_ICA_BIT) == 0 {
+            return 2;
+        }
+
+        let cyc_per_line = self.video_mode.cycles_per_scanline();
+        let x = ((line_cycle as u64 * 480) / cyc_per_line.max(1) as u64) as u32;
+        let y = self.scanline;
+        let x_outside_active_display = x >= 408;
+
+        // No contending during the final 8-pixel area on all lines
+        if x >= 472 {
+            return 2;
+        }
+
+        let ica_height = self.video_mode.vblank_lines();
+
+        // No contending during the free-run area of ICA lines
+        if y < ica_height && x_outside_active_display {
+            return 2;
+        }
+
+        // No contending during the free-run area of DCA lines if DCA is disabled
+        if (self.dcr[PATH] & DCR_DCA_BIT) == 0 && x_outside_active_display {
+            return 2;
+        }
+
+        // System access is restricted to the last 5 out of every 16 CLKs (30 MHz master ticks).
+        let slot_cycle = (line_cycle * 2) & 0x0F;
+        if slot_cycle >= 11 {
+            return 2;
+        }
+
+        // Stalled waiting for the system slot (1 to 5 clocks at 15.5 MHz)
+        2 + (((11 - slot_cycle) + 1) >> 1)
     }
 
     /// Calculates the DTACK delay cycles for CD-RTOS Main ROM access based on CSR1W configuration.
