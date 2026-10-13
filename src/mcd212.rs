@@ -889,6 +889,12 @@ impl Mcd212 {
     }
 
     fn process_vsr<const PATH: usize>(&mut self, pixels: &mut [u32; 768], transparent: &mut [bool; 768]) {
+        if (self.dcr[PATH] & DCR_DE_BIT) == 0 {
+            pixels.fill(0);
+            transparent.fill(true);
+            return;
+        }
+
         let icm = self.get_icm::<PATH>();
         let tp_ctrl = self.get_transparency_control::<PATH>();
         let width = 768;
