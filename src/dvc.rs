@@ -678,8 +678,10 @@ impl Dvc {
             let compare = self.get_fmv_word(FMV_TIMER);
             if compare > 0 && self.timer_counter >= compare {
                 self.timer_counter = 0;
-                self.or_fma_word(FMA_ISR, FMA_IRQ_POLL);
-                self.or_fmv_word(FMV_ISR, FMV_IRQ_TIM);
+                if self.video_playing || self.decoder_enabled {
+                    self.or_fma_word(FMA_ISR, FMA_IRQ_POLL);
+                    self.or_fmv_word(FMV_ISR, FMV_IRQ_TIM);
+                }
             } else if compare > 0 {
                 self.timer_counter = self.timer_counter.wrapping_add(1);
             }
@@ -1072,11 +1074,16 @@ impl Dvc {
                     .video_decoder
                     .as_mut()
                     .map_or(false, |d| d.take_sequence_end());
+                let buffer_drained = self.dvc_stream_fifo.is_empty()
+                    && self.demux.video.is_empty()
+                    && self.video_decoder.as_ref().map_or(true, |d| d.is_buffer_empty());
+
                 self.underflow_count = self.underflow_count.saturating_add(1);
 
-                if sequence_ended {
-                    // Stream finished: explicit sequence_end_code (0xB7)
-                    trace!(">>> [DVC] END OF SEQUENCE after {} frames", self.frames_decoded_count);
+                if sequence_ended || (buffer_drained && self.underflow_count >= 15) {
+                    // Stream finished: either explicit sequence_end_code (0xB7)
+                    // or complete FIFO/demux/bitstream buffer drain after presenting frames.
+                    trace!(">>> [DVC] END OF SEQUENCE / DRAIN after {} frames (underflow={})", self.frames_decoded_count, self.underflow_count);
                     self.or_fmv_word(FMV_ISR, FMV_IRQ_EOD | FMV_IRQ_ESI);
                     self.or_fma_word(FMA_ISR, FMA_IRQ_EOI);
                     self.set_fmv_word(0x5C, 0x0000); // Return display status to idle
