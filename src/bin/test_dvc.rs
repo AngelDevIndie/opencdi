@@ -193,7 +193,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 0
             };
 
-            let cdic_lvl = if bus.cdic.irq_pending || bus.dvc.irq_pending() {
+            let cdic_lvl = if bus.in4_pending() {
                 if frame == 1335 && _line == 0 {
                     println!("[Frame 1335] DVC IRQ: cdic={}, dvc_fma_isr=0x{:04X} fma_ier=0x{:04X} ivec=0x{:04X} | fmv_isr=0x{:04X} fmv_ier=0x{:04X} ivec=0x{:04X}",
                         bus.cdic.irq_pending, bus.dvc.fma_isr, bus.dvc.fma_ier, bus.dvc.fma_ivec,

@@ -13,6 +13,13 @@ use crate::nvram::Timekeeper;
 use crate::scc_timer::SccTimer;
 use crate::slave::SlaveHle;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SharedIn4Owner {
+    Idle,
+    Cdic,
+    Vmpeg,
+}
+
 pub struct CdiBus {
     pub rom: Box<[u8; 512 * 1024]>,
     pub sys_ram: Box<[u8; 512 * 1024]>,
@@ -25,6 +32,8 @@ pub struct CdiBus {
     pub mcd212: Mcd212,
     pub nvram: Timekeeper,
     pub slave: SlaveHle,
+
+    pub shared_in4_owner: SharedIn4Owner,
 
     pub scc_timer: SccTimer,
     pub scc_uart_cmd: u8,
@@ -56,6 +65,7 @@ impl CdiBus {
             mcd212: Mcd212::new(),
             nvram: Timekeeper::new(),
             slave: SlaveHle::new(),
+            shared_in4_owner: SharedIn4Owner::Idle,
 
             scc_timer: SccTimer::new(),
             scc_uart_cmd: 0,
@@ -87,6 +97,7 @@ impl CdiBus {
         self.dma = SccDma::new();
         self.scc_uart_cmd = 0;
         self.scc_uart_tx_irq = false;
+        self.shared_in4_owner = SharedIn4Owner::Idle;
         self.current_pc = 0;
         self.trace_setup = false;
         self.wait_cycles = 0;
@@ -147,10 +158,47 @@ impl CdiBus {
         self.cdic.step_cycles(cycles, &mut self.cdrom);
     }
 
+    #[inline]
+    pub fn dvc_dma_requested(&self) -> bool {
+        self.dvc.dma_requested
+            || (self.dvc.get_fmv_word(crate::dvc::FMV_SYSCMD) & 0x8000) != 0
+            || (self.dvc.get_fma_word(crate::dvc::FMA_CMD) & 0x8000) != 0
+    }
+
+    pub fn arbitrate_shared_in4(&mut self) {
+        match self.shared_in4_owner {
+            SharedIn4Owner::Cdic => {
+                if !self.cdic.irq_pending {
+                    self.shared_in4_owner = SharedIn4Owner::Idle;
+                }
+            }
+            SharedIn4Owner::Vmpeg => {
+                if !self.dvc.irq_pending() {
+                    self.shared_in4_owner = SharedIn4Owner::Idle;
+                }
+            }
+            SharedIn4Owner::Idle => {}
+        }
+
+        if self.shared_in4_owner == SharedIn4Owner::Idle {
+            if self.dvc.irq_pending() {
+                self.shared_in4_owner = SharedIn4Owner::Vmpeg;
+            } else if self.cdic.irq_pending {
+                self.shared_in4_owner = SharedIn4Owner::Cdic;
+            }
+        }
+    }
+
+    #[inline]
+    pub fn in4_pending(&mut self) -> bool {
+        self.arbitrate_shared_in4();
+        self.shared_in4_owner != SharedIn4Owner::Idle
+    }
+
     pub fn tick_dvc(&mut self, cycles: u32) {
         if self.dvc.is_fitted() {
             self.dvc.tick(cycles);
-            if self.dvc.dma_requested {
+            if self.dvc_dma_requested() {
                 self.perform_dvc_dma();
             }
         }
@@ -199,18 +247,29 @@ impl CdiBus {
     }
 
     pub fn perform_dvc_dma(&mut self) {
-        if !self.dvc.dma_requested {
+        let fmv_req = (self.dvc.get_fmv_word(crate::dvc::FMV_SYSCMD) & 0x8000) != 0;
+        let fma_req = (self.dvc.get_fma_word(crate::dvc::FMA_CMD) & 0x8000) != 0;
+        if !self.dvc.dma_requested && !fmv_req && !fma_req {
             return;
         }
-        self.dvc.dma_requested = false;
-        let start = self.dma.channels[1].memory_address_counter;
+
         let count = self.dma.channels[1].transfer_counter as u32;
-        let b16: Vec<u8> = (0..16.min(count * 2)).map(|off| self.read_byte(start.wrapping_add(off))).collect();
-        trace!("PERFORM DVC DMA at frame {}: start=0x{:08X}, count={} (for_fma={}) | bytes[0..16]={:02X?}", 
-            self.current_frame, start, count, self.dvc.transfer_for_fma, b16);
         if count == 0 {
             return;
         }
+
+        if fma_req {
+            self.dvc.transfer_for_fma = true;
+        } else if fmv_req {
+            self.dvc.transfer_for_fma = false;
+        }
+
+        self.dvc.dma_requested = false;
+        let start = self.dma.channels[1].memory_address_counter;
+        let b16: Vec<u8> = (0..16.min(count * 2)).map(|off| self.read_byte(start.wrapping_add(off))).collect();
+        trace!("PERFORM DVC DMA at frame {}: start=0x{:08X}, count={} (for_fma={}) | bytes[0..16]={:02X?}", 
+            self.current_frame, start, count, self.dvc.transfer_for_fma, b16);
+
         for i in 0..count {
             let addr = start.wrapping_add(i * 2);
             let hi = self.read_byte(addr);
@@ -553,6 +612,9 @@ impl AddressBus for CdiBus {
                     };
                     trace!("DMA BYTE WRITE: reg=0x{:04X}, offset=0x{:02X}, new_val=0x{:04X} at PC=0x{:06X}", reg, offset, new_val, self.current_pc);
                     self.dma.write_reg(offset, new_val);
+                    if offset >= 0x40 && self.dvc_dma_requested() {
+                        self.perform_dvc_dma();
+                    }
                 }
                 _ => {}
             }
@@ -639,6 +701,9 @@ impl AddressBus for CdiBus {
             0xE00000..=0xE3FFFF => {
                 if self.dvc.is_fitted() {
                     self.dvc.write_byte(addr, value);
+                    if self.dvc_dma_requested() {
+                        self.perform_dvc_dma();
+                    }
                 }
             }
 
@@ -667,6 +732,9 @@ impl AddressBus for CdiBus {
                 let offset = (reg - 0x4000) & !1;
                 trace!("DMA REG WRITE: offset 0x{:02X} = 0x{:04X} at PC=0x{:06X}", offset, value, self.current_pc);
                 self.dma.write_reg(offset, value);
+                if offset >= 0x40 && self.dvc_dma_requested() {
+                    self.perform_dvc_dma();
+                }
                 return;
             }
             self.write_byte(address, (value >> 8) as u8);
@@ -742,6 +810,9 @@ impl AddressBus for CdiBus {
                             addr, word_offset & 0x7FFF, value, self.current_pc);
                     }
                     self.dvc.write_reg(word_offset, value);
+                    if self.dvc_dma_requested() {
+                        self.perform_dvc_dma();
+                    }
                 }
                 return;
             }
@@ -798,14 +869,20 @@ impl AddressBus for CdiBus {
             }
 
             if level == 4 {
-                if self.cdic.irq_pending {
-                    let vec = (self.cdic.interrupt_vector & 0xFF) as u32;
-                    return if vec != 0 { vec } else { 0x1C };
-                } else if self.dvc.irq_pending() {
-                    let vec = self.dvc.intack_vector() as u32;
-                    return if vec != 0 { vec } else { 0x1C };
+                self.arbitrate_shared_in4();
+                match self.shared_in4_owner {
+                    SharedIn4Owner::Vmpeg => {
+                        let vec = self.dvc.intack_vector() as u32;
+                        return if vec != 0 { vec } else { 0x1C };
+                    }
+                    SharedIn4Owner::Cdic => {
+                        let vec = (self.cdic.interrupt_vector & 0xFF) as u32;
+                        return if vec != 0 { vec } else { 0x1C };
+                    }
+                    SharedIn4Owner::Idle => {
+                        return 0x1C;
+                    }
                 }
-                return 0x1C;
             }
 
             if level == 2 {

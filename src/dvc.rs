@@ -639,13 +639,11 @@ impl Dvc {
     pub fn irq_pending(&self) -> bool {
         let fma_isr = self.get_fma_word(FMA_ISR);
         let fma_ier = self.get_fma_word(FMA_IER);
-        let fma_ivec = self.get_fma_word(FMA_IVEC);
-        let fma_pending = (fma_isr & fma_ier) != 0 && (fma_ivec & 0xFF) != 0;
+        let fma_pending = (fma_isr & fma_ier) != 0;
 
         let fmv_isr = self.get_fmv_word(FMV_ISR);
         let fmv_ier = self.get_fmv_word(FMV_IER);
-        let fmv_ivec = self.get_fmv_word(FMV_IVEC);
-        let fmv_pending = (fmv_isr & fmv_ier) != 0 && (fmv_ivec >> 3) != 0;
+        let fmv_pending = (fmv_isr & fmv_ier) != 0;
 
         fma_pending || fmv_pending
     }
@@ -654,10 +652,12 @@ impl Dvc {
         let fma_isr = self.get_fma_word(FMA_ISR);
         let fma_ier = self.get_fma_word(FMA_IER);
         let fma_ivec = self.get_fma_word(FMA_IVEC);
-        if (fma_isr & fma_ier) != 0 && (fma_ivec & 0xFF) != 0 {
-            (fma_ivec & 0x00FF) as u8
+        if (fma_isr & fma_ier) != 0 {
+            let vec = (fma_ivec & 0x00FF) as u8;
+            if vec != 0 { vec } else { 0x1C }
         } else {
-            (self.get_fmv_word(FMV_IVEC) >> 3) as u8
+            let vec = ((self.get_fmv_word(FMV_IVEC) >> 3) & 0xFF) as u8;
+            if vec != 0 { vec } else { 0x1C }
         }
     }
 

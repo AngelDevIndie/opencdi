@@ -532,7 +532,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 bus.scc_timer.picr1 & 7
             } else { 0 };
 
-            let cdic_lvl = if bus.cdic.irq_pending || bus.dvc.irq_pending() { 4 } else { 0 };
+            let cdic_lvl = if bus.in4_pending() { 4 } else { 0 };
             let slave_lvl = if bus.slave.irq_pending { 2 } else { 0 };
 
             let highest_ipl = int1_lvl.max(timer_lvl).max(cdic_lvl).max(slave_lvl);
@@ -591,7 +591,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let timer_lvl = if bus.scc_timer.timer_irq {
                     bus.scc_timer.picr1 & 7
                 } else { 0 };
-                let cdic_lvl = if bus.cdic.irq_pending || bus.dvc.irq_pending() { 4 } else { 0 };
+                let cdic_lvl = if bus.in4_pending() { 4 } else { 0 };
                 let slave_lvl = if bus.slave.irq_pending { 2 } else { 0 };
                 let highest_ipl = int1_lvl.max(timer_lvl).max(cdic_lvl).max(slave_lvl);
                 cpu.set_irq(highest_ipl);

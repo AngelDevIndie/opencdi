@@ -11,12 +11,12 @@ Legenda: `[ ]` aperto · `[~]` fix applicata nel codice, **da confermare giocand
 | Controlli Pad | Mancata risposta verso l'alto ("non riesco ad andare su") | `[~]` | **Risolto (v0.1.1):** in `main.rs`, disaccoppiate e gerarchizzate rigorosamente le direzioni pad: prima bottoni D-Pad (`Button::DPad*`), poi asse D-Pad (`Axis::DPad*`) solo se neutro, poi stick analogico (`LeftStickY`) solo se neutro. Eliminato il conflitto che sommava -1 e +1 azzerando il comando SU. |
 | Striker | Flickering sprite dei giocatori e velocità scostante | `[ ]` | **In analisi attiva:** isolamento del ciclo di doppio buffer (VSR/DCP) e temporizzazione degli interrupt di riga/campo (DCA line 43 e ICA line 0). |
 | Tutti i giochi | Mancato avvio da BIOS ("OPEN" perenne / disco non riconosciuto) | `[x]` | **Risolto:** in `bus.rs`, INTACK Livello 2 (Slave MCU) restituiva `0x3A` anziché Autovettore 2 `0x1A`. Con `0x1A`, OS-9 `cdapdriv` esegue `0x42D3D2` e riconosce lo stato disco ("PLAY CD-I"). |
-| 7th Guest | Schermata nera a fine video / Freeze post-fantasma nel corridoio | `[~]` | **Risolto:** (1) Rimosso errato controllo `DCR_DE_BIT` su Path 1 in `mcd212.rs` che azzerava lo sfondo 3D di Plane B; (2) In `dvc.rs`, introdotto il reset completo dei contatori frame e del decoder a fine stream e su comandi PLAY/STOP, garantendo l'emissione di `FMV_IRQ_SEQ` sui video successivi. |
+| 7th Guest | Schermata nera a fine video / Freeze post-fantasma nel corridoio | `[~]` | **Risolto:** (1) Rimosso errato controllo `DCR_DE_BIT` su Path 1 in `mcd212.rs` che azzerava lo sfondo 3D di Plane B; (2) Reset del ciclo di vita DVC su PLAY/STOP; (3) Risolto handshake DMAREQ2 non azzerato su counter 0 e introdotto arbitraggio daisy-chain `SharedIn4Owner` su interrupt IN4 in `bus.rs`. |
 | Rise of the Robots | Velocità eccessiva combattimenti / filmati accelerati | `[ ]` | In indagine: CD-DA streaming rate a 75 settori/s e temporizzazione OS-9 `F$Sleep` |
 | Lost Eden | Audio/voci dialoghi, menu, stuttering filmati | `[ ]` | In indagine: elaborazione Soundmap ADPCM CDIC e overlay esterno su Plane B |
 
-> Nota di sincronizzazione binari: tutti e 3 i binari eseguibili (`opencdi/target/release/opencdi.exe`, `opencdi/opencdi.exe` e `../opencdi.exe`) e l'archivio storico `builds/20261012_opencdi_v0.1.1_fix_transizioni.exe` sono stati compilati in Release e sincronizzati con hash SHA256 identico:
-> `3453CFA8FF6AC81605F76F523A73323EC5CC425B83F07B3CE3AEC58DE1E760EB`.
+> Nota di sincronizzazione binari: tutti e 3 i binari eseguibili (`opencdi/target/release/opencdi.exe`, `opencdi/opencdi.exe` e `../opencdi.exe`) sono stati compilati in Release e sincronizzati con hash SHA256 identico:
+> `99260CE0FE805FC5BFFECABC16433811BC5793F48BDCA2075B617AAF1B0169C3`.
 
 ---
 
@@ -81,10 +81,16 @@ Legenda: `[ ]` aperto · `[~]` fix applicata nel codice, **da confermare giocand
   - **Causa Tecnica:** In `src/mcd212.rs`, era stato introdotto un controllo `(self.dcr[PATH] & DCR_DE_BIT) == 0` che forzava pixel neri e trasparenza totale. Nelle specifiche hardware Philips MCD212, solo DCR1 (Path 0) possiede il bit Display Enable globale; su DCR2 (Path 1 / Plane B) il bit 15 non è un plane-enable e non viene impostato dal gioco. Di conseguenza, Plane B (lo sfondo 3D della villa) veniva azzerato, lasciando solo gli overlay di Plane A su fondo nero.
   - **Risoluzione:** Rimosso il controllo errato in `process_vsr`. Sfondo 3D e oggetti interattivi tornano a essere visualizzati perfettamente fusi.
 
-- [x] **Blocco/Freeze al termine dei filmati in-game e post-fantasma nel corridoio**
+- [x] **Blocco/Freeze al termine dei filmati in-game e post-fantasma nel corridoio (Handshake DMAREQ2 & Arbitraggio IN4)**
   - **Sintomo:** Salendo le scale e girando a sinistra, dopo il filmato del fantasma nel corridoio il gioco si blocca tentando di avanzare.
-  - **Causa Tecnica:** Al termine di uno stream MPEG (tramite Sequence End o buffer drain) o all'avvio di un nuovo video con comando `PLAY (0x0008)`, `self.frames_presented_count` non veniva resettato a zero e il decoder non veniva reinizializzato. Sui video successivi `frames_presented_count` continuava a incrementare dai frame precedenti e non raggiungeva mai il valore 1, impedendo l'emissione dell'interrupt `FMV_IRQ_SEQ | FMV_IRQ_GOP`. Il driver DVC (`vmpega.rom`) restava in attesa indefinita dell'interrupt di inizio sequenza.
-  - **Risoluzione:** In `src/dvc.rs`, implementato il ciclo di vita completo dello stream DVC: reset di `frames_presented_count = 0`, `frames_decoded_count = 0`, `underflow_count = 0`, pulizia dei buffer FIFO/demux e rimozione del vecchio decoder su `PLAY`, `STOP`, `DEC_OFF` e al termine dello stream in `on_vsync`. Il primo frame del nuovo video genera regolarmente `FMV_IRQ_SEQ`, sbloccando la progressione.
+  - **Cause Tecniche Identificate:**
+    1. **Handshake DMAREQ2 azzerato prematuramente in `bus.rs:perform_dvc_dma`:** Quando DVC richiedeva un trasferimento DMA (bit 15 `0x8000` di `FMV_SYSCMD`/`FMA_CMD`), `dma_requested` veniva impostato a `true`. Se il canale 1 DMA del 68070 non aveva ancora il `transfer_counter > 0`, `perform_dvc_dma` azzerava il flag prima del check `count == 0`; quando la CPU programmava successivamente il contatore, il DMA non partiva mai, il bit COC (0x80) non veniva impostato e il driver restava in loop infinito.
+    2. **Mancato arbitraggio della linea di interrupt condivisa IN4 (Livello 4):** Nel CD-i 220, CDIC e scheda DVC condividono in daisy-chain la linea fisica IN4. Verificando prima `cdic.irq_pending`, qualsiasi interrupt DVC veniva cannibalizzato durante lo streaming da disco: la CPU eseguiva la ISR del CDIC anziché quella del DVC, corrompendo gli anelli PCL e lasciando DVC in attesa.
+    3. **Qualificazione errata dei vettori in `dvc.rs:irq_pending`:** La presenza di `(fmv_ivec >> 3) != 0` impediva l'emissione dell'interrupt a livello logico se il vettore non era ancora stato programmato dal driver.
+  - **Risoluzione:**
+    1. In `src/bus.rs`, `perform_dvc_dma` non azzera più la linea `DMAREQ2` se `count == 0`, mantenendola asserita fino all'effettiva esecuzione, e attiva il DMA immediatamente sia su scrittura dei registri DVC sia su scrittura del DMA Channel 1.
+    2. Aggiunto in `src/bus.rs` il meccanismo `SharedIn4Owner` (`Idle`, `Cdic`, `Vmpeg`) con `arbitrate_shared_in4()`: il dispositivo che asserisce per primo IN4 detiene la linea fino al reset della sua condizione di interrupt; l'IACK4 indirizza deterministicamente al vettore del relativo driver.
+    3. In `src/dvc.rs`, `irq_pending()` verifica rigorosamente `(ISR & IER) != 0` a prescindere dal vettore registrato, con fallback sicuro all'autovettore `0x1C` in `intack_vector()`.
 
 *(Per la panoramica e lo stato di tutti i 15 giochi presenti nella cartella `file utili/giochi/`, consultare il file `COMPATIBILITY.md`)*
 
