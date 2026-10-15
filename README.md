@@ -1,84 +1,93 @@
 # OpenCDi
 
-OpenCDi è un emulatore open source per **Philips CD-i** scritto in **Rust**.
-L'obiettivo del progetto è preservare e rendere fruibile la libreria software e multimediale del sistema Philips CD-i con un'architettura moderna, veloce e pulita.
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Language: Rust](https://img.shields.io/badge/language-Rust-orange.svg)](https://www.rust-lang.org/)
+
+[Versione Italiana](README_IT.md)
+
+OpenCDi is a modern, standalone, open-source **Philips CD-i** emulator written in **Rust**.
+The goal of the project is to accurately preserve and run the software and multimedia library of the Philips CD-i system with a clean, modular, and fast architecture.
+
+![OpenCDi Showcase](opencdi_showcase.png)
 
 ---
 
-## Caratteristiche & Architettura
+## Architecture & Features
 
-- **CPU:** Philips SCC68070 (set di istruzioni 68000/68010, interrupt autovettorati, timer interni, UART e canali DMA su chip).
+- **CPU:** Philips SCC68070 (full 68000/68010 instruction set, autovectored interrupts, on-chip DMA channels, timers, and UART).
 - **Video:** Philips MCD-212 Video Display Controller:
-  - Rendering a doppio piano (Plane A & Plane B) e backdrop.
-  - Formati grafici supportati: CLUT4, CLUT7, CLUT8, Run-Length (7 e 8 bit), DYUV (Delta-YUV) e RGB555.
-  - Istruzioni display lista linea per linea ICA (Instruction Control Area) e DCA (Dynamic Control Area).
+  - Dual-plane rendering (Plane A & Plane B) with hardware backdrop.
+  - Video coding methods: CLUT4, CLUT7, CLUT8, Run-Length (7-bit and 8-bit), DYUV (Delta-YUV), and RGB555.
+  - Line-by-line Instruction Control Area (ICA) and Dynamic Control Area (DCA) display lists execution.
 - **CD-ROM & Audio:**
-  - Controller CDIC (CD-i Controller) per la decodifica dei settori Mode 2 Form 1 e Form 2.
-  - Filtraggio e riproduzione audio CD-DA e CD-i ADPCM (Livelli A, B e C, stereo e mono).
-  - Supporto per immagini disco CHD (formato compresso MAME/MESS) e binari raw.
-- **Microcontrollore Slave (68HC05 HLE):**
-  - Gestione input per tastiera, mouse e gamepad CD-i.
-  - Orologio Real-Time (RTC) e memoria non volatile (NVRAM).
+  - CDIC (CD-i Controller) with sector processing for Mode 2 Form 1 and Form 2.
+  - Hardware CD-DA and CD-i ADPCM audio decoding (Level A, B, and C, stereo and mono).
+  - Native support for compressed CHD disc images (`chd-rs`) and raw 2352-byte sector images.
+- **Slave Microcontroller (68HC05 HLE):**
+  - High-Level Emulation for CD-i keyboard, mouse, and gamepads.
+  - Real-Time Clock (RTC) and Non-Volatile RAM (NVRAM) state persistence.
 - **Digital Video Cartridge (DVC / MPEG-1):**
-  - Emulazione della cartuccia DVC per la riproduzione FMV (Full Motion Video).
-  - Demuxer hardware integrato (video pack MPEG-1 e audio layer 2).
-  - Decoder video MPEG e pipeline di compositing YUV -> RGB su MCD-212.
+  - Hardware FMV (Full Motion Video) cartridge emulation.
+  - Integrated MPEG-1 system stream demuxer (video and audio packets).
+  - Video decoder with YUV-to-RGB planar compositing onto the MCD-212 external video plane.
+  - Accurate presentation pacing and end-of-sequence stream drain detection.
 - **Frontend GUI:**
-  - Finestra interattiva a 50/60 Hz basata su `minifb`.
-  - Controlli tastiera, mouse e gamepad.
+  - Interactive 50/60 Hz display window powered by `minifb`.
+  - Configurable keyboard, mouse, and gamepad controls.
 
 ---
 
-## Compatibilità Verificata
+## Verified Game Compatibility
 
-| Titolo | Supporto Video / DVC | Stato Gameplay |
+| Game | Graphics / DVC Mode | Current Status |
 |---|---|---|
-| **Hotel Mario** | Grafica MCD212 / CDIC | Pienamente giocabile, audio ADPCM e animazioni complete |
-| **Striker Pro** | Grafica MCD212 / CDIC | Menù e gameplay funzionanti, audio sincronizzato |
-| **Dragon's Lair (USA)** | DVC FMV MPEG-1 | Attract mode continuo e gameplay con video FMV MPEG attivo |
-| **The 7th Guest** | DVC FMV MPEG-1 | Boot, FMV introduttivo e caricamento scene |
-| **Rise of the Robots** | Grafica MCD212 / DVC | Boot e sequenze iniziali |
-| **Burn:Cycle** | DVC FMV MPEG-1 | Boot e sequenze video |
+| **Hotel Mario** | MCD-212 / CDIC ADPCM | Fully playable in-game with complete animations and sound |
+| **Striker Pro** | MCD-212 / CDIC ADPCM | Menus and in-game match playable with synchronized audio |
+| **Dragon's Lair (USA)** | DVC FMV MPEG-1 | Continuous attract mode and interactive gameplay with active MPEG video |
+| **The 7th Guest** | DVC FMV MPEG-1 | Boots, plays intro cutscenes, and advances through scenes |
+| **Lost Eden** | DVC FMV MPEG-1 / CDIC | Boots, cutscenes, character dialogue, and exploration |
+| **Rise of the Robots** | MCD-212 / DVC | Boots and plays intro sequences |
+| **Burn:Cycle** | DVC FMV MPEG-1 | Boots and plays video sequences |
 
 ---
 
-## Come Compilare ed Eseguire
+## Building and Running
 
-### Prerequisiti
-- [Rust & Cargo](https://rustup.rs/) (versione 1.70 o superiore).
+### Prerequisites
+- [Rust & Cargo](https://rustup.rs/) (version 1.70 or newer).
 
-### Compilazione
+### Building from Source
 ```bash
 git clone https://github.com/sigsantilio/opencdi.git
 cd opencdi
 cargo build --release
 ```
 
-L'eseguibile ottimizzato verrà generato in `target/release/opencdi.exe`.
+The optimized binary will be built in `target/release/opencdi.exe`.
 
-### File BIOS e ROM
-Posizionare i seguenti file BIOS nella cartella `file utili/bios/` o nella cartella di lavoro:
-- `cdi220b.rom` (BIOS CD-i 220)
-- `vmpega.rom` (ROM del Digital Video Cartridge per i titoli con filmati MPEG)
+### BIOS & DVC ROM Setup
+Place the following system ROMs inside the `bios/` folder or alongside the executable:
+- `cdi220b.rom` (Philips CD-i 220 BIOS)
+- `vmpega.rom` (Digital Video Cartridge ROM for titles with MPEG video)
 
-### Avvio
+### Running a Game
 ```bash
-cargo run --release -- "percorso/al/gioco.chd"
+cargo run --release -- "path/to/game.chd"
 ```
-Oppure trascinare direttamente l'immagine `.chd` sull'eseguibile `opencdi.exe`.
+Or drag and drop any `.chd` CD-i disc image directly onto `opencdi.exe`.
 
 ---
 
-## Contribuire al Progetto
+## Contributing
 
-Questo progetto è guidato dalla passione per la storia del CD-i e dalla ricerca sulla sua architettura hardware.
-Tutti i contributi sono i benvenuti:
-- Segnalazioni di bug e report di compatibilità di nuovi titoli.
-- Pull request per perfezionare timing, interrupt, registri hardware e decoder.
-- Documentazione e capture di log da hardware reale.
+This project is driven by a passion for CD-i preservation and hardware research.
+All contributions are warmly welcome:
+- Bug reports and game compatibility testing.
+- Pull requests improving CPU timing, peripheral registers, or decoder accuracy.
+- Hardware traces and documentation from real CD-i units.
 
 ---
 
-## Licenza
+## License
 
-Distribuito sotto licenza **MIT**. Consulta il file `LICENSE` per i dettagli.
+Distributed under the **MIT License**. See [`LICENSE`](LICENSE) for details.
