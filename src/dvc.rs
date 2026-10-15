@@ -873,6 +873,11 @@ impl Dvc {
                     self.video_armed = true;
                     self.video_playing = true;
                     self.decoder_enabled = true;
+                    self.frames_presented_count = 0;
+                    self.underflow_count = 0;
+                    if self.video_decoder.as_ref().map_or(true, |d| d.is_buffer_empty()) {
+                        self.video_decoder = None;
+                    }
                 }
                 if value & 0x0020 != 0 { // CONTINUE
                     self.video_armed = false;
@@ -885,6 +890,14 @@ impl Dvc {
                 if value & 0x0080 != 0 { // STOP
                     self.video_armed = false;
                     self.video_playing = false;
+                    self.decoder_enabled = false;
+                    self.underflow_count = 0;
+                    self.video_decoder = None;
+                    self.frames_presented_count = 0;
+                    self.frames_decoded_count = 0;
+                    self.dvc_stream_fifo.clear();
+                    self.demux.clear();
+                    self.set_fmv_word(0x5C, 0x0000);
                 }
                 if value & 0x0100 != 0 { // RESET
                     self.video_playing = false;
@@ -898,6 +911,10 @@ impl Dvc {
                 if value & 0x2000 != 0 { // DEC_OFF
                     self.decoder_enabled = false;
                     self.video_playing = false;
+                    self.underflow_count = 0;
+                    self.video_decoder = None;
+                    self.frames_presented_count = 0;
+                    self.frames_decoded_count = 0;
                 }
                 if value & 0x8000 != 0 { // DMA request Video
                     self.dma_requested = true;
@@ -1093,6 +1110,12 @@ impl Dvc {
                     self.audio_enabled = false;
                     self.audio_armed = false;
                     self.underflow_count = 0;
+                    self.video_decoder = None;
+                    self.frames_presented_count = 0;
+                    self.frames_decoded_count = 0;
+                    self.dvc_stream_fifo.clear();
+                    self.demux.clear();
+                    self.mp2.reset();
                 } else {
                     // Temporary buffer underflow while waiting for CDIC stream:
                     // signal NDAT (No Data) only; the sequence is not over yet.

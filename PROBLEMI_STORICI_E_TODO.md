@@ -11,7 +11,7 @@ Legenda: `[ ]` aperto · `[~]` fix applicata nel codice, **da confermare giocand
 | Controlli Pad | Mancata risposta verso l'alto ("non riesco ad andare su") | `[~]` | **Risolto (v0.1.1):** in `main.rs`, disaccoppiate e gerarchizzate rigorosamente le direzioni pad: prima bottoni D-Pad (`Button::DPad*`), poi asse D-Pad (`Axis::DPad*`) solo se neutro, poi stick analogico (`LeftStickY`) solo se neutro. Eliminato il conflitto che sommava -1 e +1 azzerando il comando SU. |
 | Striker | Flickering sprite dei giocatori e velocità scostante | `[ ]` | **In analisi attiva:** isolamento del ciclo di doppio buffer (VSR/DCP) e temporizzazione degli interrupt di riga/campo (DCA line 43 e ICA line 0). |
 | Tutti i giochi | Mancato avvio da BIOS ("OPEN" perenne / disco non riconosciuto) | `[x]` | **Risolto:** in `bus.rs`, INTACK Livello 2 (Slave MCU) restituiva `0x3A` anziché Autovettore 2 `0x1A`. Con `0x1A`, OS-9 `cdapdriv` esegue `0x42D3D2` e riconosce lo stato disco ("PLAY CD-I"). |
-| 7th Guest | Blocco a fine filmato | `[~]` | `dvc.rs`: alla fine della sequenza video/drain sollevati sia `FMV_IRQ_EOD | FMV_IRQ_ESI` che `FMA_IRQ_EOI` per l'audio, azzerato `SYS_VSR` a 0 e disattivati completamente decoder e audio per sbloccare i processi OS-9 |
+| 7th Guest | Schermata nera a fine video / Freeze post-fantasma nel corridoio | `[~]` | **Risolto:** (1) Rimosso errato controllo `DCR_DE_BIT` su Path 1 in `mcd212.rs` che azzerava lo sfondo 3D di Plane B; (2) In `dvc.rs`, introdotto il reset completo dei contatori frame e del decoder a fine stream e su comandi PLAY/STOP, garantendo l'emissione di `FMV_IRQ_SEQ` sui video successivi. |
 | Rise of the Robots | Velocità eccessiva combattimenti / filmati accelerati | `[ ]` | In indagine: CD-DA streaming rate a 75 settori/s e temporizzazione OS-9 `F$Sleep` |
 | Lost Eden | Audio/voci dialoghi, menu, stuttering filmati | `[ ]` | In indagine: elaborazione Soundmap ADPCM CDIC e overlay esterno su Plane B |
 
@@ -76,7 +76,15 @@ Legenda: `[ ]` aperto · `[~]` fix applicata nel codice, **da confermare giocand
 ---
 
 ## 5. The 7th Guest (DVC)
-- [ ] **Blocco/Freeze al termine dei filmati in-game**
-  - **Sintomo:** Durante la partita, dopo la riproduzione di un filmato DVC con Stauf o i fantasmi nelle stanze, il gioco tende a bloccarsi indefinitamente.
-  - **Causa Tecnica:** Al raggiungimento dell'End of Sequence (EOS / codice `0x000001B7`), il driver DVC VMPEG deve sollevare l'interrupt `FMV_IRQ_EOD` (bit 3 in `fmv_isr`) o `FMA_IRQ_EOI` e aggiornare il Timecode di stato. Se il segnale non viene notificato al processo in attesa, il gioco rimane bloccato in polling sul driver video.
-  - **Piano d'azione:** Implementare la gestione pulita di `FMV_IRQ_EOD` e il reset dello stato del decoder al termine del flusso MPEG in `dvc.rs`.
+- [x] **Schermata nera con elementi isolati/scontornati dopo le transizioni video**
+  - **Sintomo:** Al termine delle transizioni filmate compare una schermata quasi completamente nera con solo alcuni elementi interattivi visibili (hotspot, oggetti isolati), senza lo sfondo della stanza.
+  - **Causa Tecnica:** In `src/mcd212.rs`, era stato introdotto un controllo `(self.dcr[PATH] & DCR_DE_BIT) == 0` che forzava pixel neri e trasparenza totale. Nelle specifiche hardware Philips MCD212, solo DCR1 (Path 0) possiede il bit Display Enable globale; su DCR2 (Path 1 / Plane B) il bit 15 non è un plane-enable e non viene impostato dal gioco. Di conseguenza, Plane B (lo sfondo 3D della villa) veniva azzerato, lasciando solo gli overlay di Plane A su fondo nero.
+  - **Risoluzione:** Rimosso il controllo errato in `process_vsr`. Sfondo 3D e oggetti interattivi tornano a essere visualizzati perfettamente fusi.
+
+- [x] **Blocco/Freeze al termine dei filmati in-game e post-fantasma nel corridoio**
+  - **Sintomo:** Salendo le scale e girando a sinistra, dopo il filmato del fantasma nel corridoio il gioco si blocca tentando di avanzare.
+  - **Causa Tecnica:** Al termine di uno stream MPEG (tramite Sequence End o buffer drain) o all'avvio di un nuovo video con comando `PLAY (0x0008)`, `self.frames_presented_count` non veniva resettato a zero e il decoder non veniva reinizializzato. Sui video successivi `frames_presented_count` continuava a incrementare dai frame precedenti e non raggiungeva mai il valore 1, impedendo l'emissione dell'interrupt `FMV_IRQ_SEQ | FMV_IRQ_GOP`. Il driver DVC (`vmpega.rom`) restava in attesa indefinita dell'interrupt di inizio sequenza.
+  - **Risoluzione:** In `src/dvc.rs`, implementato il ciclo di vita completo dello stream DVC: reset di `frames_presented_count = 0`, `frames_decoded_count = 0`, `underflow_count = 0`, pulizia dei buffer FIFO/demux e rimozione del vecchio decoder su `PLAY`, `STOP`, `DEC_OFF` e al termine dello stream in `on_vsync`. Il primo frame del nuovo video genera regolarmente `FMV_IRQ_SEQ`, sbloccando la progressione.
+
+*(Per la panoramica e lo stato di tutti i 15 giochi presenti nella cartella `file utili/giochi/`, consultare il file `COMPATIBILITY.md`)*
+
