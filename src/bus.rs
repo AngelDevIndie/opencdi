@@ -205,7 +205,9 @@ impl CdiBus {
         self.dvc.dma_requested = false;
         let start = self.dma.channels[1].memory_address_counter;
         let count = self.dma.channels[1].transfer_counter as u32;
-        log::trace!(">>> PERFORM DVC DMA: start=0x{:08X}, count={} (for_fma={})", start, count, self.dvc.transfer_for_fma);
+        let b16: Vec<u8> = (0..16.min(count * 2)).map(|off| self.read_byte(start.wrapping_add(off))).collect();
+        trace!("PERFORM DVC DMA at frame {}: start=0x{:08X}, count={} (for_fma={}) | bytes[0..16]={:02X?}", 
+            self.current_frame, start, count, self.dvc.transfer_for_fma, b16);
         if count == 0 {
             return;
         }
@@ -217,6 +219,8 @@ impl CdiBus {
             self.dvc.push_stream_byte(lo);
         }
         self.dvc.process_stream();
+        trace!("After DVC DMA: demux_video_len={}, demux_audio_len={}, has_decoder={}, decoded_count={}",
+            self.dvc.demux.video.len(), self.dvc.demux.audio.len(), self.dvc.video_decoder.is_some(), self.dvc.frames_decoded_count);
         self.dma.channels[1].memory_address_counter = start.wrapping_add(count * 2);
         self.dma.channels[1].transfer_counter = 0;
         self.dma.channels[1].channel_status |= 0x80;
@@ -518,9 +522,6 @@ impl AddressBus for CdiBus {
                 // UART Transmit Data
                 0x2017 | 0x2019 => {
                     let ch = value as char;
-                    if ch == 'E' {
-                        println!(">>> [UART 'E' WRITTEN] PC=0x{:06X}", self.current_pc);
-                    }
                     if ch.is_ascii() && !ch.is_control() || ch == '\n' || ch == '\r' || ch == '\t' {
                         print!("{}", ch);
                     } else {
@@ -589,7 +590,6 @@ impl AddressBus for CdiBus {
                 } else {
                     (cur & 0xFF00) | (value as u16)
                 };
-                trace!("CDIC WRITE reg 0x{:04X} = 0x{:04X} at PC=0x{:06X}", offset, new_val, self.current_pc);
                 self.cdic.write_reg(offset, new_val);
                 if self.cdic.dma_triggered {
                     self.perform_dma();

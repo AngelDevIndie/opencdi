@@ -831,10 +831,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         pad_y = (pad_y + dir_y.clamp(-1, 1) * pad_speed).clamp(0, 559);
                         moved = true;
                     }
-                    if moved || key_btn != prev_key_btn {
-                        bus.slave.update_mouse(pad_x, pad_y, key_btn);
+                    let combined_btn = key_btn | mouse_btn;
+                    if moved || combined_btn != prev_key_btn {
+                        bus.slave.update_mouse(pad_x, pad_y, combined_btn);
                     }
-                    prev_key_btn = key_btn;
+                    prev_key_btn = combined_btn;
                 }
                 InputDeviceMode::Mouse => {
                     pad_x = mouse_x;

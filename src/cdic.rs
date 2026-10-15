@@ -262,6 +262,7 @@ impl Cdic {
                 self.interrupt_vector = val;
             }
             0x3FE => {
+                trace!("CDIC WRITE data_buffer = 0x{:04X}", val);
                 self.data_buffer = val;
                 if (self.data_buffer & 0x8000) != 0 {
                     self.handle_cdic_command();
@@ -312,6 +313,7 @@ impl Cdic {
     }
 
     pub fn cancel_disc_read(&mut self) {
+        debug!("CDIC cancel_disc_read called (curr_lba={})", self.curr_lba);
         self.disc_command = 0;
         self.disc_mode = 0;
         self.curr_lba = 0;
@@ -320,7 +322,7 @@ impl Cdic {
     }
 
     fn handle_cdic_command(&mut self) {
-        info!("CDIC Command 0x{:02X} received", self.command);
+        info!("CDIC Command 0x{:02X} received (LBA={}, time=0x{:08X})", self.command, self.curr_lba, self.time);
         match self.command {
             0x23 | 0x24 => {
                 // Reset Mode 1 / Reset Mode 2: read single sector then cancel in process_sector
@@ -486,6 +488,7 @@ impl Cdic {
 
         let submode = buf[22];
         if (submode & 0x80) != 0 {
+            debug!("CDIC SUBMODE_EOF at LBA={}", self.curr_lba);
             // SUBMODE_EOF: queue end of read after this sector
             self.disc_command = 0;
         }
@@ -515,6 +518,23 @@ impl Cdic {
         let submode = buf[22];
         // Must be Form 2 (0x20) and Audio (0x04)
         if (submode & 0x24) != 0x24 {
+            return false;
+        }
+
+        // Green Book CD-i ADPCM Coding Information check:
+        // Byte 23 (sub-header coding information):
+        // Bit 6 must be 0 (reserved).
+        // Bits 4-5 cannot be 11 (invalid bits/sample).
+        // Bits 2-3 cannot be 10 or 11 (invalid sample rate).
+        // Bits 0-1 cannot be 10 or 11 (invalid channels).
+        // MPEG/DVC audio sectors have coding = 0x7F or start with MPEG sync.
+        let coding = buf[23];
+        if (coding & 0x40) != 0 || (coding & 0x30) == 0x30 || (coding & 0x0C) >= 0x08 || (coding & 0x03) >= 0x02 {
+            return false;
+        }
+
+        // Also verify payload does not start with MPEG pack header (00 00 01 BA)
+        if buf.len() >= 28 && buf[24] == 0x00 && buf[25] == 0x00 && buf[26] == 0x01 && buf[27] == 0xBA {
             return false;
         }
 

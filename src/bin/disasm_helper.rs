@@ -1,21 +1,33 @@
-use std::fs;
+#[path = "../cdrom.rs"]
+mod cdrom;
 
-fn main() {
-    let rom = fs::read("file utili/bios/cdi220b.rom")
-        .or_else(|_| fs::read("../file utili/bios/cdi220b.rom"))
-        .expect("Cannot read ROM");
+use std::path::{Path, PathBuf};
+use crate::cdrom::{CdRom, CD_SECTOR_RAW_SIZE};
+use opencdi::dvc::MpegSystemDemux;
 
-    let args: Vec<String> = std::env::args().collect();
-    let start = args.get(1).and_then(|s| u32::from_str_radix(s.trim_start_matches("0x"), 16).ok()).unwrap_or(0x400F30);
-    let end = args.get(2).and_then(|s| u32::from_str_radix(s.trim_start_matches("0x"), 16).ok()).unwrap_or(start + 0x40);
-
-    let mut pc = start;
-    while pc < end {
-        let offset = (pc - 0x400000) as usize;
-        let op = u16::from_be_bytes([rom[offset], rom[offset + 1]]);
-        let (dis, len) = m68k::dasm::disassemble(pc, op, m68k::CpuType::SCC68070);
-        let bytes: Vec<String> = (0..len).map(|i| format!("{:02X}", rom[offset + i as usize])).collect();
-        println!("0x{:06X}: {:<16} {:<32}", pc, bytes.join(" "), dis);
-        pc += len as u32;
+fn find_file(rel: &str) -> Option<PathBuf> {
+    for c in [
+        Path::new(rel).to_path_buf(),
+        Path::new("..").join(rel),
+        Path::new("file utili").join(rel),
+        Path::new("..").join("file utili").join(rel),
+    ] {
+        if c.exists() { return Some(c); }
     }
+    None
+}
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let game_path = find_file("giochi/Dragon's Lair (USA).chd").expect("chd not found");
+    let text = std::fs::read_to_string("lair_disasm.txt")?;
+    let lines: Vec<&str> = text.lines().collect();
+    for (i, line) in lines.iter().enumerate() {
+        if line.contains("0x27443A") || line.contains("0x2745A0") || line.contains("0x2745A6") || line.contains("0x2745AA") {
+            for j in i.saturating_sub(4)..=(i + 12).min(lines.len() - 1) {
+                println!("{}", lines[j]);
+            }
+            println!("------------------");
+        }
+    }
+    Ok(())
 }

@@ -16,71 +16,65 @@ fn find_file(rel: &str) -> Option<PathBuf> {
     None
 }
 
-fn parse_rtos_dir(cd: &mut CdRom, start_lba: u32, total_bytes: u32, path_prefix: &str) {
-    let mut sector_buf = [0u8; CD_SECTOR_RAW_SIZE];
-    let num_sectors = (total_bytes.max(2048) + 2047) / 2048;
-
-    for s in 0..num_sectors {
-        let lba = start_lba + s;
-        if !cd.read_sector(lba, &mut sector_buf) { break; }
-        let mut offset = 24; // Form 1 data starts at 24
-        while offset < 2048 + 24 {
-            let record_len = sector_buf[offset] as usize;
-            if record_len == 0 { break; }
-            if offset + record_len > sector_buf.len() { break; }
-
-            let name_len = sector_buf[offset + 32] as usize;
-            let name = if name_len > 0 && offset + 33 + name_len <= sector_buf.len() {
-                String::from_utf8_lossy(&sector_buf[offset + 33..offset + 33 + name_len]).to_string()
-            } else {
-                String::new()
-            };
-            print!("{:<15}: ", name);
-            for b in &sector_buf[offset..offset + 24] { print!("{:02X} ", b); }
-            println!();
-
-            offset += record_len;
-        }
-    }
-}
-
-
-
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let game_path = find_file("giochi/7th Guest, The (USA).chd").expect("Game not found");
+    let arg = std::env::args().nth(1).unwrap_or_else(|| "giochi/Dragon's Lair (USA).chd".to_string());
+    let game_path = find_file(&arg).expect("Game not found");
     let mut cd = CdRom::open(&game_path)?;
-    println!("=== The 7th Guest Root Directory ===");
-    // CD-i root directory is usually at sector 150 (LBA 150 or 166)
-    // Let's check sectors 150 to 180
-    for lba in 150..180 {
-        let mut buf = [0u8; CD_SECTOR_RAW_SIZE];
-        if cd.read_sector(lba, &mut buf) {
-            let form = buf[18] & 0x20;
-            let submode = buf[18];
-            if (submode & 0x0E) == 0 { // data
-                parse_rtos_dir(&mut cd, lba, 2048, "");
+    println!("Scanning CD-i volume descriptor for: {:?}", game_path);
+
+    let mut sector_buf = [0u8; CD_SECTOR_RAW_SIZE];
+    for lba in [16, 150, 166] {
+        if cd.read_sector(lba, &mut sector_buf) {
+            let data = &sector_buf[24..24 + 2048];
+            if &data[1..6] == b"CD-I " || &data[1..6] == b"CD001" {
+                println!("Found Volume Descriptor at LBA {}: Type=0x{:02X}, ID='{}'",
+                    lba, data[0], String::from_utf8_lossy(&data[1..6]));
+
+                let root_rec = &data[140..178];
+                let root_lba = u32::from_be_bytes([root_rec[2], root_rec[3], root_rec[4], root_rec[5]]);
+                let root_size = u32::from_be_bytes([root_rec[10], root_rec[11], root_rec[12], root_rec[13]]);
+                println!("Root directory: LBA {}, size {}", root_lba, root_size);
+                dump_dir(&mut cd, root_lba, root_size, "");
+                break;
             }
         }
     }
-    return Ok(());
-    let mut buf = [0u8; CD_SECTOR_RAW_SIZE];
-    cd.read_sector(8661, &mut buf);
-    for i in (0..64).step_by(16) {
-        print!("{:04X}: ", i);
-        for j in 0..16 {
-            print!("{:02X} ", buf[i + j]);
-        }
-        println!();
-    }
-
-
-
-
-
-
-
 
     Ok(())
 }
 
+fn dump_dir(cd: &mut CdRom, start_lba: u32, size: u32, indent: &str) {
+    let mut sector_buf = [0u8; CD_SECTOR_RAW_SIZE];
+    let num_sectors = (size + 2047) / 2048;
 
+    for s in 0..num_sectors {
+        let lba = start_lba + s;
+        if !cd.read_sector(lba, &mut sector_buf) { break; }
+        let data = &sector_buf[24..24 + 2048];
+        let mut offset = 0;
+        while offset < 2048 {
+            let rec_len = data[offset] as usize;
+            if rec_len == 0 { break; }
+            if offset + rec_len > 2048 || offset + 33 > 2048 { break; }
+
+            let file_lba = u32::from_be_bytes([data[offset + 2], data[offset + 3], data[offset + 4], data[offset + 5]]);
+            let file_size = u32::from_be_bytes([data[offset + 10], data[offset + 11], data[offset + 12], data[offset + 13]]);
+            let flags = data[offset + 25];
+            let name_len = data[offset + 32] as usize;
+            let name = if name_len > 0 && offset + 33 + name_len <= 2048 {
+                String::from_utf8_lossy(&data[offset + 33..offset + 33 + name_len]).to_string()
+            } else {
+                String::new()
+            };
+
+            let is_dir = (flags & 2) != 0;
+            println!("{}{} (LBA {}, size {}, flags 0x{:02X})", indent, name, file_lba, file_size, flags);
+
+            if is_dir && name != "." && name != ".." && !name.is_empty() && !name.starts_with('\0') {
+                dump_dir(cd, file_lba, file_size, &format!("{}  ", indent));
+            }
+
+            offset += rec_len;
+        }
+    }
+}
