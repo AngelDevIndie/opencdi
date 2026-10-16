@@ -51,14 +51,10 @@ Questo documento traccia lo stato di compatibilità e i problemi riscontrati dei
 
 ### 4. The 7th Guest (USA)
 - **DVC:** Richiesto.
-- **Stato:** Giocabile / In perfezionamento.
-- **Problemi identificati e risolti:**
-  1. **Schermata nera con elementi isolati a fine video:**
-     - *Causa:* In `src/mcd212.rs`, l'applicazione erronea del bit `DCR_DE_BIT` (Display Enable) su Path 1/Plane B azzerava il piano dello sfondo 3D della villa (sul MCD-212 solo DCR1 controlla l'uscita display complessiva, mentre su DCR2 il bit 15 non è un plane-enable).
-     - *Soluzione:* Rimosso il controllo errato, ripristinando la visualizzazione simultanea corretta di Plane A (oggetti/hotspot interattivi) e Plane B (sfondo 3D).
-  2. **Freeze post-video fantasma al primo piano a sinistra:**
-     - *Causa:* (A) Mancato reset del contatore `frames_presented_count` all'avvio del video successivo; (B) Azzeramento prematuro della linea `DMAREQ2` in `perform_dvc_dma` prima che il canale 1 DMA del 68070 venisse programmato con contatore > 0, facendo fallire l'handshake e lasciando il driver DVC in attesa perenne del completamento DMA; (C) Mancanza di arbitraggio su IN4 (Livello 4 condiviso tra CDIC e DVC), che causava la cattura e corruzione dei vettori DVC da parte del CDIC durante la lettura continua da disco.
-     - *Soluzione:* (1) Ciclo di vita DVC con reset su `PLAY`/`STOP`; (2) Persistenza hardware della linea `DMAREQ2` in `perform_dvc_dma` finché il trasferimento non avviene con successo, attivando il DMA sia su scrittura dei registri DVC che su configurazione del DMA Channel 1; (3) Meccanismo di latching `SharedIn4Owner` (`Idle`, `Cdic`, `Vmpeg`) con daisy chain hardware-accurate su interrupt Level 4.
+- **Stato:** Parzialmente giocabile / Freeze nel corridoio in indagine.
+- **Problemi identificati:**
+  1. **Schermata nera con elementi isolati a fine video:** Risolto. Rimosso errato controllo `DCR_DE_BIT` su Path 1 in `mcd212.rs`, ripristinando la visualizzazione corretta di sfondo 3D (Plane B) e hotspot interattivi (Plane A).
+  2. **Freeze post-video fantasma al primo piano a sinistra:** In corso di analisi. Il gioco si blocca tentando di avanzare nel corridoio dopo la riproduzione del filmato; l'indagine è attiva sul flusso I/O e caricamento stream successivo.
 
 ### 5. Striker Pro (USA)
 - **DVC:** Non necessario.

@@ -31,8 +31,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     lba, data[0], String::from_utf8_lossy(&data[1..6]));
 
                 let root_rec = &data[140..178];
-                let root_lba = u32::from_be_bytes([root_rec[2], root_rec[3], root_rec[4], root_rec[5]]);
-                let root_size = u32::from_be_bytes([root_rec[10], root_rec[11], root_rec[12], root_rec[13]]);
+                let root_lba = u32::from_le_bytes([root_rec[2], root_rec[3], root_rec[4], root_rec[5]]);
+                let root_size = u32::from_le_bytes([root_rec[10], root_rec[11], root_rec[12], root_rec[13]]);
                 println!("Root directory: LBA {}, size {}", root_lba, root_size);
                 dump_dir(&mut cd, root_lba, root_size, "");
                 break;
@@ -57,8 +57,8 @@ fn dump_dir(cd: &mut CdRom, start_lba: u32, size: u32, indent: &str) {
             if rec_len == 0 { break; }
             if offset + rec_len > 2048 || offset + 33 > 2048 { break; }
 
-            let file_lba = u32::from_be_bytes([data[offset + 2], data[offset + 3], data[offset + 4], data[offset + 5]]);
-            let file_size = u32::from_be_bytes([data[offset + 10], data[offset + 11], data[offset + 12], data[offset + 13]]);
+            let file_lba = u32::from_le_bytes([data[offset + 2], data[offset + 3], data[offset + 4], data[offset + 5]]);
+            let file_size = u32::from_le_bytes([data[offset + 10], data[offset + 11], data[offset + 12], data[offset + 13]]);
             let flags = data[offset + 25];
             let name_len = data[offset + 32] as usize;
             let name = if name_len > 0 && offset + 33 + name_len <= 2048 {

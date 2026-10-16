@@ -9,3 +9,8 @@
 /screenshots_hotel_mario
 /traces
 Invia_a_GitHub.bat
+*.cpp
+*.h
+*.sv
+*.py
+*.png
