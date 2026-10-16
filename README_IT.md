@@ -72,6 +72,13 @@ Oppure trascinare direttamente l'immagine `.chd` sull'eseguibile `opencdi.exe`.
 
 ---
 
+## Documentazione & Compatibilità
+
+- **Lista di Compatibilità:** [`COMPATIBILITY.md`](COMPATIBILITY.md)
+- **Problemi Storici & Piano di Risoluzione:** [`PROBLEMI_STORICI_E_TODO.md`](PROBLEMI_STORICI_E_TODO.md)
+
+---
+
 ## Contribuire al Progetto
 
 Questo progetto è guidato dalla passione per la storia del CD-i e dalla ricerca sulla sua architettura hardware.

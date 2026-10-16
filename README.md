@@ -76,6 +76,13 @@ Or drag and drop any `.chd` CD-i disc image directly onto `opencdi.exe`.
 
 ---
 
+## Documentation & Compatibility
+
+- **Compatibility List:** [`COMPATIBILITY.md`](COMPATIBILITY.md)
+- **Known Issues & Resolution Plan:** [`KNOWN_ISSUES_AND_TODO.md`](KNOWN_ISSUES_AND_TODO.md)
+
+---
+
 ## Contributing
 
 This project is driven by a passion for CD-i preservation and hardware research.

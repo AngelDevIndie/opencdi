@@ -11,7 +11,7 @@ Questo documento traccia lo stato di compatibilità e i problemi riscontrati dei
 | 1 | `Hotel Mario (USA).chd` | No | **Giocabile / Ottimo** | Audio CD-DA e ADPCM perfetti, grafica piani A/B corretta, controlli reattivi, cutscene stabili. |
 | 2 | `Dragon's Lair (USA).chd` | **Sì** | **Giocabile / Ottimo** | Full-motion video MPEG a schermo intero fluido, attract mode e gameplay reattivo stabili, sincronizzazione CDIC corretta. |
 | 3 | `Lost Eden (Europe).chd` | **Sì** | **Giocabile / Molto buono** | Video FMV e audio CD-DA/ADPCM sincronizzati, transizioni ambienti fluide. |
-| 4 | `7th Guest, The (USA).chd` | **Sì** | **Giocabile / In perfezionamento** | Risolti i problemi di sfondo nero dopo le transizioni video e il blocco dopo il filmato del fantasma al piano superiore. |
+| 4 | `7th Guest, The (USA).chd` | **Sì** | **Parzialmente giocabile** | Sfondo nero post-video risolto; freeze/blocco nel corridoio al piano superiore in analisi attiva. |
 | 5 | `Striker Pro (USA).chd` | No | **Avviabile / Giocabile** | Grafica 2D renderizzata su doppi piani, gameplay funzionante. |
 | 6 | `Rise of the Robots (Europe).chd` | No | **Avviabile** | Intro e menù funzionanti; da verificare la stabilità in sessioni prolungate. |
 | 7 | `alberoazzurro.chd` | No / Da verif. | *Non ancora testato* | Aggiunto alla cartella giochi, in attesa di test. |

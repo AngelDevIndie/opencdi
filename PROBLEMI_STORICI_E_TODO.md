@@ -1,5 +1,7 @@
 # OpenCDi - Registro dei Problemi Storici e Piano di Risoluzione (TODO)
 
+[English Version](KNOWN_ISSUES_AND_TODO.md)
+
 Questo documento traccia in modo persistente tutti i problemi storici segnalati sull'emulatore OpenCDi, l'analisi tecnica della causa architetturale, la soluzione pianificata e lo stato di avanzamento. Ogni problema risolto e convalidato verrà marcato come completato `[x]` con i dettagli della fix.
 
 ## Stato aggiornato (12/10/2026 - Versione v0.1.1)
