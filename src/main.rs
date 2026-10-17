@@ -10,97 +10,34 @@ mod mcd212;
 mod nvram;
 mod scc_timer;
 mod slave;
+pub mod input;
 
 use std::path::{Path, PathBuf};
-use log::{info, error, debug};
+use log::{info, error};
 use m68k::{CpuCore, CpuType, AddressBus};
 use minifb::{Key, Window, WindowOptions};
 
 use crate::audio::HostAudioOutput;
 use crate::bus::CdiBus;
 use crate::gui::{
-    attach_gui_menu, pop_action, update_dvc_menu, update_input_device_menu, update_profile_menu,
-    GuiAction, InputDeviceMode, InputProfile, KeyBindings,
+    attach_gui_menu, pop_action, update_input_device_menu, update_profile_menu,
+    GuiAction, InputDeviceMode, KeyBindings,
 };
 use crate::mcd212::{SCREEN_WIDTH, SCREEN_HEIGHT};
 
 #[cfg(target_os = "windows")]
-#[repr(C)]
-struct RECT {
-    left: i32,
-    top: i32,
-    right: i32,
-    bottom: i32,
-}
-
-#[cfg(target_os = "windows")]
-#[repr(C)]
-struct POINT {
-    x: i32,
-    y: i32,
+#[link(name = "user32")]
+unsafe extern "system" {
+    fn ShowWindow(hwnd: *mut std::ffi::c_void, n_cmd_show: i32) -> i32;
+    fn IsZoomed(hwnd: *mut std::ffi::c_void) -> i32;
 }
 
 #[cfg(target_os = "windows")]
 #[link(name = "winmm")]
 unsafe extern "system" {
-    fn ShowWindow(hwnd: *mut std::ffi::c_void, n_cmd_show: i32) -> i32;
-    fn IsZoomed(hwnd: *mut std::ffi::c_void) -> i32;
     fn timeBeginPeriod(uPeriod: u32) -> u32;
     fn timeEndPeriod(uPeriod: u32) -> u32;
 }
-
-#[cfg(target_os = "windows")]
-#[link(name = "user32")]
-unsafe extern "system" {
-    fn ShowCursor(b_show: i32) -> i32;
-    fn ClipCursor(lp_rect: *const RECT) -> i32;
-    fn GetClientRect(hwnd: *mut std::ffi::c_void, lp_rect: *mut RECT) -> i32;
-    fn ClientToScreen(hwnd: *mut std::ffi::c_void, lp_point: *mut POINT) -> i32;
-}
-
-#[cfg(target_os = "windows")]
-fn set_cursor_visibility(visible: bool, is_currently_hidden: &mut bool) {
-    unsafe {
-        if !visible && !*is_currently_hidden {
-            while ShowCursor(0) >= 0 {}
-            *is_currently_hidden = true;
-        } else if visible && *is_currently_hidden {
-            while ShowCursor(1) < 0 {}
-            *is_currently_hidden = false;
-        }
-    }
-}
-
-#[cfg(not(target_os = "windows"))]
-fn set_cursor_visibility(_visible: bool, _is_currently_hidden: &mut bool) {}
-
-#[cfg(target_os = "windows")]
-fn set_mouse_confinement(confined: bool, hwnd: *mut std::ffi::c_void, is_currently_clipped: &mut bool) {
-    unsafe {
-        if confined && !hwnd.is_null() {
-            let mut rect = RECT { left: 0, top: 0, right: 0, bottom: 0 };
-            GetClientRect(hwnd, &mut rect);
-            let mut tl = POINT { x: rect.left, y: rect.top };
-            let mut br = POINT { x: rect.right, y: rect.bottom };
-            ClientToScreen(hwnd, &mut tl);
-            ClientToScreen(hwnd, &mut br);
-            let screen_rect = RECT {
-                left: tl.x,
-                top: tl.y,
-                right: br.x,
-                bottom: br.y,
-            };
-            ClipCursor(&screen_rect);
-            *is_currently_clipped = true;
-        } else if !confined && *is_currently_clipped {
-            ClipCursor(std::ptr::null());
-            *is_currently_clipped = false;
-        }
-    }
-}
-
-#[cfg(not(target_os = "windows"))]
-fn set_mouse_confinement(_confined: bool, _hwnd: *mut std::ffi::c_void, _is_currently_clipped: &mut bool) {}
 
 
 fn find_file(relative_subpath: &str) -> Option<PathBuf> {
@@ -271,15 +208,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     window.limit_update_rate(None);
 
-    // 6. Initialize Controls Configuration
-    let mut bindings = KeyBindings::new();
-    let mut input_device_mode = InputDeviceMode::Gamepad;
+    // 6. Initialize Controls Configuration & Input Manager
+    let bindings = KeyBindings::new();
+    let mut input_manager = crate::input::InputManager::new(InputDeviceMode::Gamepad, bindings);
 
     // 7. Attach Native Win32 Menu GUI
     #[cfg(target_os = "windows")]
     {
         let hwnd = window.get_window_handle();
-        attach_gui_menu(hwnd, bindings.profile, input_device_mode, bus.mcd212.video_mode);
+        attach_gui_menu(hwnd, input_manager.bindings.profile, input_manager.mode, bus.mcd212.video_mode);
         crate::gui::update_dvc_menu(bus.dvc.is_fitted());
     }
 
@@ -290,34 +227,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         bus.cdic.audio.source_rate.clone(),
     );
 
-    // 9. Initialize USB Gamepad subsystem (Gilrs / XInput / DirectInput)
-    let mut gilrs = gilrs::Gilrs::new().ok();
-    if gilrs.is_some() {
-        info!("Driver Gamepad USB attivo (Xbox / PlayStation / Generico USB)");
-    }
-
     let mut frame_count: u64 = 0;
     let mut total_instructions: u64 = 0;
     let mut disc_launched = false;
     let mut shell_ready_count: u32 = 0;
 
-    let mut pad_x: i32 = 575;
-    let mut pad_y: i32 = 335;
-    let mut pad_active = false;
     bus.emulate_wait_states = true; // Wait-states autentici hardware 15.5MHz, velocizzati dall'uncapped fast-boot
-    let mut mouse_captured = true;
-    let mut host_cursor_hidden = false;
-    let mut mouse_clipped = false;
-    let mut prev_mx: f32 = -1.0;
-    let mut prev_my: f32 = -1.0;
-    let mut prev_middle = false;
     let mut prev_f11 = false;
     let mut prev_s = false;
     let mut prev_m = false;
     let mut prev_ctrl_o = false;
     let mut prev_ctrl_i = false;
     let mut prev_f5 = false;
-    let mut prev_key_btn: u8 = 0;
 
     info!("Loop di emulazione avviato. Usa il menu o i tasti rapidi: [Ctrl+I] Inserisci Disco, [Ctrl+O] Apri e Riavvia, [F5] Reset, [F11] Schermo Intero, [Rotellina/Tasto Centrale] Cattura/Libera Mouse");
 
@@ -391,10 +312,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             frame_count = 0;
                             disc_launched = false;
                             shell_ready_count = 0;
-                            pad_x = 575;
-                            pad_y = 335;
-                            pad_active = false;
-                            mouse_captured = true;
+                            input_manager.pad_x = 575;
+                            input_manager.pad_y = 335;
                             bus.emulate_wait_states = true;
                             next_frame_time = std::time::Instant::now();
                             fps_timer = std::time::Instant::now();
@@ -419,10 +338,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     frame_count = 0;
                     disc_launched = false;
                     shell_ready_count = 0;
-                    pad_x = 575;
-                    pad_y = 335;
-                    pad_active = false;
-                    mouse_captured = true;
+                    input_manager.pad_x = 575;
+                    input_manager.pad_y = 335;
                     bus.emulate_wait_states = true;
                     next_frame_time = std::time::Instant::now();
                     fps_timer = std::time::Instant::now();
@@ -433,23 +350,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     break;
                 }
                 GuiAction::SetProfile(profile) => {
-                    bindings.set_profile(profile);
-                    update_profile_menu(bindings.profile);
-                    info!("Profilo comandi aggiornato a: {:?}", bindings.profile);
+                    input_manager.bindings.set_profile(profile);
+                    update_profile_menu(input_manager.bindings.profile);
+                    info!("Profilo comandi aggiornato a: {:?}", input_manager.bindings.profile);
                 }
                 GuiAction::SetInputDevice(mode) => {
-                    input_device_mode = mode;
+                    input_manager.mode = mode;
                     update_input_device_menu(mode);
                     info!("Dispositivo di puntamento/controllo impostato a: {:?}", mode);
                 }
                 GuiAction::ReloadControls => {
-                    bindings.load_from_ini();
-                    update_profile_menu(bindings.profile);
-                    info!("Comandi ricaricati da file INI. Profilo: {:?}", bindings.profile);
+                    input_manager.bindings.load_from_ini();
+                    update_profile_menu(input_manager.bindings.profile);
+                    info!("Comandi ricaricati da file INI. Profilo: {:?}", input_manager.bindings.profile);
                 }
                 GuiAction::ToggleReleaseMouse => {
-                    mouse_captured = !mouse_captured;
-                    info!("Mouse capture: {}", if mouse_captured { "ATTIVO" } else { "LIBERO" });
+                    input_manager.mouse_captured = !input_manager.mouse_captured;
+                    info!("Mouse capture: {}", if input_manager.mouse_captured { "ATTIVO" } else { "LIBERO" });
                 }
                 GuiAction::ToggleMute => {
                     bus.cdic.audio.muted = !bus.cdic.audio.muted;
@@ -501,9 +418,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     frame_count = 0;
                     disc_launched = false;
                     shell_ready_count = 0;
-                    pad_x = 575;
-                    pad_y = 335;
-                    pad_active = false;
+                    input_manager.pad_x = 575;
+                    input_manager.pad_y = 335;
                 }
                 GuiAction::ShowHelp => {
                     #[cfg(target_os = "windows")]
@@ -548,8 +464,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 info!("Applicazione disco in esecuzione in RAM (PC=0x{:06X}), controllo passato all'utente.", cpu.pc);
                 disc_launched = true;
                 bus.emulate_wait_states = true;
-                pad_x = 384;
-                pad_y = 280;
+                input_manager.pad_x = 384;
+                input_manager.pad_y = 280;
                 bus.slave.update_mouse(384, 280, 0);
             }
         }
@@ -662,15 +578,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let is_active = window.is_active();
         let hwnd = window.get_window_handle();
 
-        // Host cursor hiding and confinement
-        if is_active && mouse_captured {
-            set_cursor_visibility(false, &mut host_cursor_hidden);
-            set_mouse_confinement(true, hwnd, &mut mouse_clipped);
-        } else {
-            set_cursor_visibility(true, &mut host_cursor_hidden);
-            set_mouse_confinement(false, hwnd, &mut mouse_clipped);
-        }
-
         // Keyboard Shortcut: Ctrl+I (Inserisci Disco a caldo)
         let ctrl_down = window.is_key_down(Key::LeftCtrl) || window.is_key_down(Key::RightCtrl);
         let i_down = window.is_key_down(Key::I);
@@ -710,177 +617,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         prev_f11 = f11_down;
 
-        // Middle mouse button (rotellina/tasto centrale): toggle mouse capture / release focus
-        let middle_down = window.get_mouse_down(minifb::MouseButton::Middle);
-        if is_active && middle_down && !prev_middle {
-            mouse_captured = !mouse_captured;
-            info!("Controllo mouse: {}", if mouse_captured { "CATTURATO (focus console, puntatore host nascosto)" } else { "LIBERO (puntatore desktop visibile, rotellina o clic per ricatturare)" });
-        }
-        prev_middle = middle_down;
+        // Sample host input (Keyboard, USB Gamepad, Physical Mouse)
+        let host_input = input_manager.poll(&window, is_active);
 
-        // Left click inside window re-captures mouse if released
-        if is_active && !mouse_captured && window.get_mouse_down(minifb::MouseButton::Left) {
-            mouse_captured = true;
-            info!("Controllo mouse: CATTURATO (focus console, puntatore host nascosto)");
-        }
-
-        // Directional state from Keyboard (Arrow keys, WASD, or current profile)
-        let mut dir_x: i32 = 0;
-        let mut dir_y: i32 = 0;
-        let mut user_input_active = false;
-
-        if is_active {
-            if window.is_key_down(bindings.left) || window.is_key_down(Key::Left) || window.is_key_down(Key::A) {
-                dir_x -= 1;
-                user_input_active = true;
-            }
-            if window.is_key_down(bindings.right) || window.is_key_down(Key::Right) || window.is_key_down(Key::D) {
-                dir_x += 1;
-                user_input_active = true;
-            }
-            if window.is_key_down(bindings.up) || window.is_key_down(Key::Up) || window.is_key_down(Key::W) {
-                dir_y -= 1;
-                user_input_active = true;
-            }
-            if window.is_key_down(bindings.down) || window.is_key_down(Key::Down) || window.is_key_down(Key::S) {
-                dir_y += 1;
-                user_input_active = true;
-            }
-        }
-
-        // Button 1 (Action / Sword / Start) and Button 2 (Jump / Secondary)
-        let mut key_btn = 0;
-        if is_active {
-            if window.is_key_down(bindings.btn1)
-                || window.is_key_down(Key::Space)
-                || window.is_key_down(Key::Enter)
-                || window.is_key_down(Key::Z)
-                || window.is_key_down(Key::J)
-            {
-                key_btn |= 1;
-                user_input_active = true;
-            }
-            if window.is_key_down(bindings.btn2)
-                || window.is_key_down(Key::LeftShift)
-                || window.is_key_down(Key::RightShift)
-                || window.is_key_down(Key::X)
-                || window.is_key_down(Key::K)
-            {
-                key_btn |= 2;
-                user_input_active = true;
-            }
-        }
-
-        // Gamepad handling via Gilrs (Xbox / PlayStation / USB)
-        if let Some(ref mut g) = gilrs {
-            while let Some(_) = g.next_event() {} // Drain events to refresh state
-            for (_id, gamepad) in g.gamepads() {
-                if gamepad.is_connected() {
-                    let mut pad_dir_x = 0;
-                    let mut pad_dir_y = 0;
-
-                    // 1. D-Pad buttons (highest priority)
-                    if gamepad.is_pressed(gilrs::Button::DPadUp) { pad_dir_y = -1; }
-                    else if gamepad.is_pressed(gilrs::Button::DPadDown) { pad_dir_y = 1; }
-
-                    if gamepad.is_pressed(gilrs::Button::DPadLeft) { pad_dir_x = -1; }
-                    else if gamepad.is_pressed(gilrs::Button::DPadRight) { pad_dir_x = 1; }
-
-                    // 2. D-Pad axes (for gamepads where D-Pad is reported as Hat/Axis, only if button not pressed)
-                    if pad_dir_x == 0 {
-                        let dpx = gamepad.value(gilrs::Axis::DPadX);
-                        if dpx < -0.4 { pad_dir_x = -1; }
-                        else if dpx > 0.4 { pad_dir_x = 1; }
-                    }
-                    if pad_dir_y == 0 {
-                        let dpy = gamepad.value(gilrs::Axis::DPadY);
-                        if dpy > 0.4 { pad_dir_y = -1; }
-                        else if dpy < -0.4 { pad_dir_y = 1; }
-                    }
-
-                    // 3. Left Analog Stick (with deadzone 0.35, only if D-pad is neutral on that axis)
-                    if pad_dir_x == 0 {
-                        let lx = gamepad.value(gilrs::Axis::LeftStickX);
-                        if lx < -0.35 { pad_dir_x = -1; }
-                        else if lx > 0.35 { pad_dir_x = 1; }
-                    }
-                    if pad_dir_y == 0 {
-                        let ly = gamepad.value(gilrs::Axis::LeftStickY);
-                        if ly > 0.35 { pad_dir_y = -1; }
-                        else if ly < -0.35 { pad_dir_y = 1; }
-                    }
-
-                    if pad_dir_x != 0 {
-                        dir_x += pad_dir_x;
-                        user_input_active = true;
-                    }
-                    if pad_dir_y != 0 {
-                        dir_y += pad_dir_y;
-                        user_input_active = true;
-                    }
-
-                    // Button 1: South (A / Cross)
-                    if gamepad.is_pressed(gilrs::Button::South) {
-                        key_btn |= 1;
-                        user_input_active = true;
-                    }
-                    // Button 2: East (B / Circle) or West (X / Square) -> Jump
-                    if gamepad.is_pressed(gilrs::Button::East) || gamepad.is_pressed(gilrs::Button::West) {
-                        key_btn |= 2;
-                        user_input_active = true;
-                    }
-                    // Start Button -> Confirm / Action
-                    if gamepad.is_pressed(gilrs::Button::Start) {
-                        key_btn |= 1;
-                        user_input_active = true;
-                    }
-                }
-            }
-        }
-
-        // Mouse pointer handling: detect physical mouse movement or click
-        let mut mouse_btn = 0;
-        let mut mouse_x = pad_x;
-        let mut mouse_y = pad_y;
-
-        if is_active && mouse_captured {
-            if let Some((mx, my)) = window.get_mouse_pos(minifb::MouseMode::Discard) {
-                if window.get_mouse_down(minifb::MouseButton::Left) { mouse_btn |= 1; }
-                if window.get_mouse_down(minifb::MouseButton::Right) { mouse_btn |= 2; }
-
-                mouse_x = (mx.round() as i32).clamp(0, 767);
-                mouse_y = (my.round() as i32).clamp(0, 559);
-                prev_mx = mx;
-                prev_my = my;
-            }
-        }
-
-        if bus.slave.device_mouse_updated {
-            pad_x = bus.slave.device_mouse_x;
-            pad_y = bus.slave.device_mouse_y;
-            bus.slave.device_mouse_updated = false;
+        // Immediate responsive unlock: if user presses any button/dpad after initial boot, grant control
+        if host_input.user_active && frame_count > 100 {
+            disc_launched = true;
         }
 
         if !disc_launched && bus.cdrom.is_some() {
-            // During automatic boot sequence, do not let host mouse drift override PLAY CD-I auto-click
+            // During automatic boot sequence, BIOS shell handles PLAY CD-I auto-click
         } else {
-            match input_device_mode {
-                InputDeviceMode::Gamepad => {
-                    let combined_btn = key_btn | mouse_btn;
-                    if dir_x != 0 || dir_y != 0 || combined_btn != prev_key_btn {
-                        let pad_speed = 8;
-                        pad_x = (pad_x + dir_x.clamp(-1, 1) * pad_speed).clamp(0, 767);
-                        pad_y = (pad_y + dir_y.clamp(-1, 1) * pad_speed).clamp(0, 559);
-                        bus.slave.update_mouse(pad_x, pad_y, combined_btn);
-                    }
-                    prev_key_btn = combined_btn;
-                }
-                InputDeviceMode::Mouse => {
-                    pad_x = mouse_x;
-                    pad_y = mouse_y;
-                    bus.slave.update_mouse(pad_x, pad_y, mouse_btn | key_btn);
-                }
-            }
+            input_manager.dispatch(&mut bus.slave, &host_input);
         }
 
         // Screenshot hotkey (F12)
@@ -985,8 +733,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Restore host cursor and release mouse confinement on exit
-    set_cursor_visibility(true, &mut host_cursor_hidden);
-    set_mouse_confinement(false, window.get_window_handle(), &mut mouse_clipped);
+    input_manager.cleanup(window.get_window_handle());
 
     #[cfg(target_os = "windows")]
     unsafe {

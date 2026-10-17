@@ -36,6 +36,9 @@ pub struct SlaveHle {
     pub device_mouse_updated: bool,
     pub mouse_btn: u8,
 
+    pub center_x: i32,
+    pub center_y: i32,
+
     // Previous input values to detect changes
     input_mouse_x: i32,
     input_mouse_y: i32,
@@ -47,6 +50,8 @@ pub struct SlaveHle {
     pub disc_timer: u32,
     pub xbus_interrupt_enable: bool,
     pub video_mode: VideoMode,
+    pub debug_log: bool,
+    pub stream_counter: u32,
 }
 
 impl SlaveHle {
@@ -54,8 +59,10 @@ impl SlaveHle {
         Self {
             channels: [SlaveChannel::default(); 4],
 
-            device_mouse_x: 384 / 2,
-            device_mouse_y: 280 / 2,
+            device_mouse_x: 384,
+            device_mouse_y: 280,
+            center_x: 384,
+            center_y: 280,
             device_mouse_updated: false,
             mouse_btn: 0,
 
@@ -69,6 +76,8 @@ impl SlaveHle {
             disc_timer: 0,
             xbus_interrupt_enable: false,
             video_mode: VideoMode::Pal,
+            debug_log: false,
+            stream_counter: 0,
         }
     }
 
@@ -76,6 +85,13 @@ impl SlaveHle {
         for ch in &mut self.channels {
             *ch = SlaveChannel::default();
         }
+        self.device_mouse_x = 384;
+        self.device_mouse_y = 280;
+        self.center_x = 384;
+        self.center_y = 280;
+        self.input_mouse_btn = 0;
+        self.input_mouse_x = -1;
+        self.input_mouse_y = -1;
         self.irq_pending = false;
         self.disc_timer = 0;
         self.disc_state = if self.has_disc { 0x41 } else { 0x00 };
@@ -122,6 +138,10 @@ impl SlaveHle {
             ch.out_index += 1;
             ch.out_count -= 1;
 
+            if self.debug_log && ch_idx == 0 {
+                println!("[SLAVE R CH0] val=0x{:02X} (left={})", val, ch.out_count);
+            }
+
             if ch.out_count == 0 {
                 ch.out_index = 0;
                 ch.out_cmd = 0;
@@ -136,6 +156,9 @@ impl SlaveHle {
     pub fn write(&mut self, offset: u32, data: u16) {
         let ch_idx = ((offset >> 1) & 3) as usize;
         let byte_val = ((data >> 8) | (data & 0xFF)) as u8;
+        if self.debug_log && ch_idx == 0 {
+            println!("[SLAVE W CH0] byte=0x{:02X}", byte_val);
+        }
         trace!("SLAVE WRITE ch{} (offset 0x{:X}) = 0x{:02X} (raw 0x{:04X})", ch_idx, offset, byte_val, data);
 
         match ch_idx {
@@ -152,8 +175,8 @@ impl SlaveHle {
                     } else if ch.in_index == ch.in_count {
                         self.device_mouse_x = (((ch.in_buf[1] & 0x70) as i32) << 3) | ((ch.in_buf[2] & 0x7F) as i32);
                         self.device_mouse_y = (((ch.in_buf[1] & 0x0F) as i32) << 6) | ((ch.in_buf[0] & 0x3F) as i32);
-                        self.input_mouse_x = self.device_mouse_x;
-                        self.input_mouse_y = self.device_mouse_y;
+                        self.center_x = self.device_mouse_x;
+                        self.center_y = self.device_mouse_y;
                         self.device_mouse_updated = true;
                         ch.in_index = 0;
                         ch.in_count = 0;
@@ -311,11 +334,10 @@ impl SlaveHle {
 
         self.input_mouse_btn = btn;
 
-        let mut button_bits = 0x01u8;
-        if (btn & 1) != 0 { button_bits |= 0x02; }
-        if (btn & 2) != 0 { button_bits |= 0x04; }
-        if (btn & 4) != 0 { button_bits |= 0x06; }
-        let b = button_bits << 3;
+        let mut b = 0u8;
+        if (btn & 1) != 0 { b |= 0x10; } // Bit 4 = Button 1 (Action / Confirm)
+        if (btn & 2) != 0 { b |= 0x20; } // Bit 5 = Button 2 (Jump / Cancel)
+        if (btn & 4) != 0 { b |= 0x08; } // Bit 3 = Button 3 (Option / Pause)
 
         self.device_mouse_x = x.clamp(0, 767);
         self.device_mouse_y = y.clamp(0, 559);
