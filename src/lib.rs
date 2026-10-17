@@ -9,6 +9,5 @@ pub mod mcd212;
 pub mod nvram;
 pub mod scc_timer;
 pub mod slave;
-pub mod input;
 
 pub use m68k::{CpuCore, CpuType, AddressBus};

@@ -618,10 +618,14 @@ impl Mcd212 {
 
     #[inline]
     pub fn effective_active_scanlines(&self) -> usize {
-        if (self.dcr[0] & (DCR_CF_BIT | DCR_FD_BIT)) == DCR_CF_BIT {
+        if self.video_mode == VideoMode::Ntsc
+            || (self.dcr[0] & DCR_FD_BIT) != 0
+            || (self.dcr[0] & DCR_CF_BIT) != 0
+            || (self.csrw[0] & CSR1W_ST_BIT) != 0
+        {
             240
         } else {
-            self.video_mode.active_scanlines()
+            280
         }
     }
 

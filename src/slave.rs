@@ -175,8 +175,6 @@ impl SlaveHle {
                     } else if ch.in_index == ch.in_count {
                         self.device_mouse_x = (((ch.in_buf[1] & 0x70) as i32) << 3) | ((ch.in_buf[2] & 0x7F) as i32);
                         self.device_mouse_y = (((ch.in_buf[1] & 0x0F) as i32) << 6) | ((ch.in_buf[0] & 0x3F) as i32);
-                        self.center_x = self.device_mouse_x;
-                        self.center_y = self.device_mouse_y;
                         self.device_mouse_updated = true;
                         ch.in_index = 0;
                         ch.in_count = 0;
@@ -251,30 +249,31 @@ impl SlaveHle {
                         }
                         0xF0 => {
                             info!("Slave CMD 0xF0: Request Slave Revision");
-                            self.prepare_readback(3, &[0xF0, 0x32, 0x31], 0xF0, true);
+                            self.prepare_readback(2, &[0xF0, 0x32, 0x31], 0xF0, true);
                             self.channels[3].in_index = 0;
                             self.channels[3].in_count = 0;
                         }
                         0xF3 => {
                             info!("Slave CMD 0xF3: Request Pointer Type");
-                            self.prepare_readback(3, &[0xF3, 0x01], 0xF3, true);
+                            self.prepare_readback(2, &[0xF3, 0x01], 0xF3, true);
                             self.channels[3].in_index = 0;
                             self.channels[3].in_count = 0;
                         }
                         0xF4 => {
                             info!("Slave CMD 0xF4: Request Test Plug Status");
-                            self.prepare_readback(3, &[0xF4, 0x00], 0xF4, true);
+                            self.prepare_readback(2, &[0xF4, 0x00], 0xF4, true);
                             self.channels[3].in_index = 0;
                             self.channels[3].in_count = 0;
                         }
                         0xF6 => {
+                            // Authentic CD-i Slave 68HC05 response: 0x01 for NTSC (525 lines), 0x02 for PAL (625 lines)
                             let val = match self.video_mode {
-                                VideoMode::Pal => 0x01,
-                                VideoMode::Ntsc => 0x02,
+                                VideoMode::Pal => 0x02,
+                                VideoMode::Ntsc => 0x01,
                             };
                             trace!("Slave CMD 0xF6: Request NTSC/PAL Status -> 0x{:02X} ({:?})", val, self.video_mode);
                             // Polled synchronously by CPU; do NOT assert IRQ2
-                            self.prepare_readback(3, &[0xF6, val], 0xF6, false);
+                            self.prepare_readback(2, &[0xF6, val], 0xF6, false);
                             self.channels[3].in_index = 0;
                             self.channels[3].in_count = 0;
                         }
@@ -334,10 +333,11 @@ impl SlaveHle {
 
         self.input_mouse_btn = btn;
 
-        let mut b = 0u8;
-        if (btn & 1) != 0 { b |= 0x10; } // Bit 4 = Button 1 (Action / Confirm)
-        if (btn & 2) != 0 { b |= 0x20; } // Bit 5 = Button 2 (Jump / Cancel)
-        if (btn & 4) != 0 { b |= 0x08; } // Bit 3 = Button 3 (Option / Pause)
+        let mut button_bits = 0x01u8;
+        if (btn & 1) != 0 { button_bits |= 0x02; }
+        if (btn & 2) != 0 { button_bits |= 0x04; }
+        if (btn & 4) != 0 { button_bits |= 0x06; }
+        let b = button_bits << 3;
 
         self.device_mouse_x = x.clamp(0, 767);
         self.device_mouse_y = y.clamp(0, 559);
