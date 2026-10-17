@@ -154,6 +154,16 @@ impl CdiBus {
         Ok(())
     }
 
+    pub fn change_disc<P: AsRef<Path>>(&mut self, path: P) -> Result<(), Box<dyn std::error::Error>> {
+        let cd = CdRom::open(path)?;
+        self.cdrom = Some(cd);
+        self.cdic.curr_lba = 0;
+        self.cdic.command = 0;
+        self.cdic.disc_command = 0;
+        self.slave.notify_disc_swapped();
+        Ok(())
+    }
+
     pub fn tick_cdic(&mut self, cycles: u32) {
         self.cdic.step_cycles(cycles, &mut self.cdrom);
     }
@@ -230,11 +240,20 @@ impl CdiBus {
         let mcd_int = (self.mcd212.csrr[1] & (crate::mcd212::CSR2R_IT1 | crate::mcd212::CSR2R_IT2)) != 0;
         self.scc_timer.int1_w(mcd_int);
         if line == 0 && self.dvc.is_fitted() {
+            self.dvc.vsync_hz = if self.mcd212.video_mode == crate::mcd212::VideoMode::Pal { 50.0 } else { 60.0 };
             self.dvc.on_vsync();
         }
         if self.dvc.is_fitted() && !self.dvc.audio_out.is_empty() {
             if let Ok(mut q) = self.cdic.audio.sample_queue.lock() {
-                self.cdic.audio.source_rate.store(37800, std::sync::atomic::Ordering::Relaxed);
+                self.cdic.audio.source_rate.store(self.dvc.audio_sample_rate, std::sync::atomic::Ordering::Relaxed);
+                let max_samples = self.dvc.audio_sample_rate as usize;
+                let add_len = self.dvc.audio_out.len();
+                let current_len = q.len();
+                if current_len + add_len > max_samples {
+                    let overflow = (current_len + add_len) - max_samples;
+                    let to_drain = overflow.min(current_len);
+                    q.drain(0..to_drain);
+                }
                 q.extend(self.dvc.audio_out.drain(..));
             }
         }
@@ -270,16 +289,22 @@ impl CdiBus {
         trace!("PERFORM DVC DMA at frame {}: start=0x{:08X}, count={} (for_fma={}) | bytes[0..16]={:02X?}", 
             self.current_frame, start, count, self.dvc.transfer_for_fma, b16);
 
+        let for_fma = self.dvc.transfer_for_fma;
         for i in 0..count {
             let addr = start.wrapping_add(i * 2);
             let hi = self.read_byte(addr);
             let lo = self.read_byte(addr.wrapping_add(1));
-            self.dvc.push_stream_byte(hi);
-            self.dvc.push_stream_byte(lo);
+            if for_fma {
+                self.dvc.push_fma_stream_byte(hi);
+                self.dvc.push_fma_stream_byte(lo);
+            } else {
+                self.dvc.push_stream_byte(hi);
+                self.dvc.push_stream_byte(lo);
+            }
         }
         self.dvc.process_stream();
-        trace!("After DVC DMA: demux_video_len={}, demux_audio_len={}, has_decoder={}, decoded_count={}",
-            self.dvc.demux.video.len(), self.dvc.demux.audio.len(), self.dvc.video_decoder.is_some(), self.dvc.frames_decoded_count);
+        trace!("After DVC DMA: demux_video_len={}, demux_audio_len={}, fma_audio_len={}, has_decoder={}, decoded_count={}",
+            self.dvc.demux.video.len(), self.dvc.demux.audio.len(), self.dvc.fma_demux.audio.len(), self.dvc.video_decoder.is_some(), self.dvc.frames_decoded_count);
         self.dma.channels[1].memory_address_counter = start.wrapping_add(count * 2);
         self.dma.channels[1].transfer_counter = 0;
         self.dma.channels[1].channel_status |= 0x80;

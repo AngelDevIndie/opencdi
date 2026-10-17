@@ -50,7 +50,10 @@ impl ChannelState {
 pub struct CdiAudio {
     pub left_state: ChannelState,
     pub right_state: ChannelState,
+    pub map_left_state: ChannelState,
+    pub map_right_state: ChannelState,
     pub sample_queue: Arc<Mutex<VecDeque<(f32, f32)>>>,
+    pub sfx_queue: Arc<Mutex<VecDeque<(f32, f32)>>>,
     pub source_rate: Arc<AtomicU32>,
     pub volume: f32,
     pub muted: bool,
@@ -62,7 +65,10 @@ impl CdiAudio {
         Self {
             left_state: ChannelState::default(),
             right_state: ChannelState::default(),
+            map_left_state: ChannelState::default(),
+            map_right_state: ChannelState::default(),
             sample_queue: Arc::new(Mutex::new(VecDeque::with_capacity(32768))),
+            sfx_queue: Arc::new(Mutex::new(VecDeque::with_capacity(16384))),
             source_rate: Arc::new(AtomicU32::new(37800)),
             volume: 1.0,
             muted: false,
@@ -73,21 +79,25 @@ impl CdiAudio {
     pub fn reset(&mut self) {
         self.left_state.reset();
         self.right_state.reset();
+        self.map_left_state.reset();
+        self.map_right_state.reset();
         if let Ok(mut q) = self.sample_queue.lock() {
             q.clear();
         }
+        if let Ok(mut sq) = self.sfx_queue.lock() {
+            sq.clear();
+        }
     }
 
-    pub fn decode_sector(&mut self, payload: &[u8], is_stereo: bool, is_8bit: bool, sample_rate: u32) {
-        if payload.len() < 18 * 128 {
-            return;
-        }
-
-        self.source_rate.store(sample_rate, Ordering::Relaxed);
-        self.total_sectors_decoded += 1;
-
+    fn decode_xa_payload(
+        payload: &[u8],
+        is_stereo: bool,
+        is_8bit: bool,
+        vol: f32,
+        left_state: &mut ChannelState,
+        right_state: &mut ChannelState,
+    ) -> Vec<(f32, f32)> {
         let mut samples = Vec::with_capacity(18 * 224);
-        let vol = if self.muted { 0.0 } else { self.volume };
 
         for g in 0..18 {
             let group = &payload[g * 128..(g + 1) * 128];
@@ -104,9 +114,9 @@ impl CdiAudio {
                         for line in 0..28 {
                             let raw_sample = ((group[data_start + line * 4] as u16) << 8) as i16;
                             let out = if ch == 0 {
-                                self.left_state.decode_xa_unit(param, raw_sample)
+                                left_state.decode_xa_unit(param, raw_sample)
                             } else {
-                                self.right_state.decode_xa_unit(param, raw_sample)
+                                right_state.decode_xa_unit(param, raw_sample)
                             };
                             group_samples[ch][sample_base + line] = out;
                         }
@@ -126,7 +136,7 @@ impl CdiAudio {
 
                         for line in 0..28 {
                             let raw_sample = ((group[data_start + line * 4] as u16) << 8) as i16;
-                            mono_samples[sample_base + line] = self.left_state.decode_xa_unit(param, raw_sample);
+                            mono_samples[sample_base + line] = left_state.decode_xa_unit(param, raw_sample);
                         }
                     }
                     for s in 0..112 {
@@ -149,9 +159,9 @@ impl CdiAudio {
                             let nibble = (group[data_start + line * 4] >> shift) & 0x0F;
                             let raw_sample = ((nibble as u16) << 12) as i16;
                             let out = if ch == 0 {
-                                self.left_state.decode_xa_unit(param, raw_sample)
+                                left_state.decode_xa_unit(param, raw_sample)
                             } else {
-                                self.right_state.decode_xa_unit(param, raw_sample)
+                                right_state.decode_xa_unit(param, raw_sample)
                             };
                             group_samples[ch][sample_base + line] = out;
                         }
@@ -173,7 +183,7 @@ impl CdiAudio {
                         for line in 0..28 {
                             let nibble = (group[data_start + line * 4] >> shift) & 0x0F;
                             let raw_sample = ((nibble as u16) << 12) as i16;
-                            mono_samples[sample_base + line] = self.left_state.decode_xa_unit(param, raw_sample);
+                            mono_samples[sample_base + line] = left_state.decode_xa_unit(param, raw_sample);
                         }
                     }
                     for s in 0..224 {
@@ -183,9 +193,11 @@ impl CdiAudio {
                 }
             }
         }
+        samples
+    }
 
-        // Normalize sample rate to 37,800 Hz so sample_queue rate is always constant
-        let final_samples: Vec<(f32, f32)> = if sample_rate == 18900 {
+    fn upsample_if_needed(samples: Vec<(f32, f32)>, sample_rate: u32) -> Vec<(f32, f32)> {
+        if sample_rate == 18900 {
             let mut upsampled = Vec::with_capacity(samples.len() * 2);
             for i in 0..samples.len() {
                 let s0 = samples[i];
@@ -196,9 +208,27 @@ impl CdiAudio {
             upsampled
         } else {
             samples
-        };
+        }
+    }
+
+    pub fn decode_sector(&mut self, payload: &[u8], is_stereo: bool, is_8bit: bool, sample_rate: u32) {
+        if payload.len() < 18 * 128 {
+            return;
+        }
 
         self.source_rate.store(37800, Ordering::Relaxed);
+        self.total_sectors_decoded += 1;
+
+        let vol = if self.muted { 0.0 } else { self.volume };
+        let samples = Self::decode_xa_payload(
+            payload,
+            is_stereo,
+            is_8bit,
+            vol,
+            &mut self.left_state,
+            &mut self.right_state,
+        );
+        let final_samples = Self::upsample_if_needed(samples, sample_rate);
 
         if let Ok(mut q) = self.sample_queue.lock() {
             // Cap queue at ~1.0s of audio to prevent latency while avoiding clicks
@@ -212,6 +242,36 @@ impl CdiAudio {
             q.extend(final_samples);
         }
     }
+
+    pub fn decode_audio_map_sector(&mut self, payload: &[u8], is_stereo: bool, is_8bit: bool, sample_rate: u32) {
+        if payload.len() < 18 * 128 {
+            return;
+        }
+
+        self.total_sectors_decoded += 1;
+
+        let vol = if self.muted { 0.0 } else { self.volume };
+        let samples = Self::decode_xa_payload(
+            payload,
+            is_stereo,
+            is_8bit,
+            vol,
+            &mut self.map_left_state,
+            &mut self.map_right_state,
+        );
+        let final_samples = Self::upsample_if_needed(samples, sample_rate);
+
+        if let Ok(mut sq) = self.sfx_queue.lock() {
+            const MAX_SFX_SAMPLES: usize = 37800;
+            let current_len = sq.len();
+            if current_len + final_samples.len() > MAX_SFX_SAMPLES {
+                let overflow = (current_len + final_samples.len()) - MAX_SFX_SAMPLES;
+                let to_drain = overflow.min(current_len);
+                sq.drain(0..to_drain);
+            }
+            sq.extend(final_samples);
+        }
+    }
 }
 
 pub struct HostAudioOutput {
@@ -221,6 +281,7 @@ pub struct HostAudioOutput {
 impl HostAudioOutput {
     pub fn try_start(
         sample_queue: Arc<Mutex<VecDeque<(f32, f32)>>>,
+        sfx_queue: Arc<Mutex<VecDeque<(f32, f32)>>>,
         source_rate: Arc<AtomicU32>,
     ) -> Option<Self> {
         let host = cpal::default_host();
@@ -258,6 +319,11 @@ impl HostAudioOutput {
         let mut prebuffering = true;
         let mut wait_count: u32 = 0;
 
+        let mut sfx_phase: f64 = 0.0;
+        let mut sfx_curr = (0.0f32, 0.0f32);
+        let mut sfx_next = (0.0f32, 0.0f32);
+        let mut sfx_active = false;
+
         let err_fn = |err| error!("Audio output stream error: {:?}", err);
 
         let stream_res = device.build_output_stream(
@@ -272,10 +338,11 @@ impl HostAudioOutput {
                         return;
                     }
                 };
+                let mut sfx_guard = sfx_queue.lock().ok();
 
                 let q_len = q_guard.len();
 
-                // Prebuffering management: wait for a healthy cushion (~2000 samples / ~53 ms)
+                // Prebuffering management for main stream: wait for a healthy cushion (~2000 samples / ~53 ms)
                 // before playback starts or resumes after underrun, eliminating micro-stutters.
                 const PREBUFFER_SAMPLES: usize = 2000;
                 if prebuffering {
@@ -287,50 +354,86 @@ impl HostAudioOutput {
                         resample_phase = 0.0;
                     } else if q_len > 0 {
                         wait_count += 1;
-                        // For short sound effects that don't reach 2000 samples, flush after ~40ms
                         if wait_count >= 4 {
                             prebuffering = false;
                             wait_count = 0;
                             curr_sample = q_guard.pop_front().unwrap_or((0.0, 0.0));
                             next_sample = q_guard.pop_front().unwrap_or(curr_sample);
                             resample_phase = 0.0;
-                        } else {
-                            output.fill(0.0);
-                            return;
                         }
                     } else {
                         wait_count = 0;
-                        output.fill(0.0);
-                        return;
                     }
                 }
 
-                // Smooth Proportional Dynamic Rate Control (DRC):
-                // Keeps the buffer centered around TARGET_QUEUE (~3000 samples / ~80ms)
-                // without abrupt speed step jumps or pitch glitches.
+                if !sfx_active {
+                    if let Some(ref mut sq) = sfx_guard {
+                        if !sq.is_empty() {
+                            sfx_active = true;
+                            sfx_curr = sq.pop_front().unwrap_or((0.0, 0.0));
+                            sfx_next = sq.pop_front().unwrap_or(sfx_curr);
+                            sfx_phase = 0.0;
+                        }
+                    }
+                }
+
+                if prebuffering && !sfx_active {
+                    output.fill(0.0);
+                    return;
+                }
+
+                // Smooth Proportional Dynamic Rate Control (DRC) for main stream:
                 const TARGET_QUEUE: f64 = 3000.0;
                 let diff = (q_len as f64 - TARGET_QUEUE) / TARGET_QUEUE;
-                let drc = (1.0 + diff * 0.05).clamp(0.95, 1.05);
+                let drc = (1.0 + diff * 0.005).clamp(0.995, 1.005);
                 let step = (src_rate / host_sample_rate) * drc;
+                let sfx_step = 37800.0 / host_sample_rate;
 
                 let mut out_idx = 0;
                 while out_idx < output.len() {
-                    while resample_phase >= 1.0 {
-                        resample_phase -= 1.0;
-                        curr_sample = next_sample;
-                        if let Some(s) = q_guard.pop_front() {
-                            next_sample = s;
-                        } else {
-                            // Buffer starvation: decay smoothly to silence and re-enter prebuffering
-                            next_sample = (curr_sample.0 * 0.85, curr_sample.1 * 0.85);
-                            prebuffering = true;
-                            wait_count = 0;
+                    let (mut l, mut r) = (0.0f32, 0.0f32);
+
+                    if !prebuffering {
+                        while resample_phase >= 1.0 {
+                            resample_phase -= 1.0;
+                            curr_sample = next_sample;
+                            if let Some(s) = q_guard.pop_front() {
+                                next_sample = s;
+                            } else {
+                                next_sample = (curr_sample.0 * 0.85, curr_sample.1 * 0.85);
+                                prebuffering = true;
+                                wait_count = 0;
+                            }
                         }
+                        let t = resample_phase as f32;
+                        l = curr_sample.0 * (1.0 - t) + next_sample.0 * t;
+                        r = curr_sample.1 * (1.0 - t) + next_sample.1 * t;
+                        resample_phase += step;
                     }
 
-                    let t = resample_phase as f32;
-                    let l = curr_sample.0 * (1.0 - t) + next_sample.0 * t;
-                    let r = curr_sample.1 * (1.0 - t) + next_sample.1 * t;
+                    if sfx_active {
+                        while sfx_phase >= 1.0 {
+                            sfx_phase -= 1.0;
+                            sfx_curr = sfx_next;
+                            let popped = sfx_guard.as_mut().and_then(|sq| sq.pop_front());
+                            if let Some(s) = popped {
+                                sfx_next = s;
+                            } else {
+                                sfx_curr = (0.0, 0.0);
+                                sfx_next = (0.0, 0.0);
+                                sfx_active = false;
+                                break;
+                            }
+                        }
+                        if sfx_active {
+                            let st = sfx_phase as f32;
+                            let sl = sfx_curr.0 * (1.0 - st) + sfx_next.0 * st;
+                            let sr = sfx_curr.1 * (1.0 - st) + sfx_next.1 * st;
+                            l = (l + sl).clamp(-1.0, 1.0);
+                            r = (r + sr).clamp(-1.0, 1.0);
+                            sfx_phase += sfx_step;
+                        }
+                    }
 
                     if channels == 1 {
                         output[out_idx] = (l + r) * 0.5;
@@ -345,8 +448,6 @@ impl HostAudioOutput {
                         }
                         out_idx += channels;
                     }
-
-                    resample_phase += step;
                 }
             },
             err_fn,

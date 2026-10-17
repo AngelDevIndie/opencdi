@@ -84,6 +84,7 @@ pub struct Cdic {
     pub decoding_audio_map: bool,
     pub decode_addr: u16,
     pub audio_sector_counter: u8,
+    pub audio_map_counter: u8,
     pub audio_format_sectors: u8,
     pub audio_cycle_accumulator: u32,
 
@@ -122,6 +123,7 @@ impl Cdic {
             decoding_audio_map: false,
             decode_addr: 0xFFFF,
             audio_sector_counter: 0,
+            audio_map_counter: 0,
             audio_format_sectors: 0,
             audio_cycle_accumulator: 0,
 
@@ -159,6 +161,7 @@ impl Cdic {
         self.decoding_audio_map = false;
         self.decode_addr = 0xFFFF;
         self.audio_sector_counter = 0;
+        self.audio_map_counter = 0;
         self.audio_format_sectors = 0;
         self.audio_cycle_accumulator = 0;
 
@@ -247,14 +250,15 @@ impl Cdic {
                 );
                 if (val & 0x2000) == 0 {
                     self.decode_addr = 0xFFFF;
+                    self.audio_map_counter = 0;
                     self.decoding_audio_map = false;
                 } else if !self.decoding_audio_map || self.decode_addr == 0xFFFF {
                     self.decode_addr = val & 0x3A00;
                     self.audio_format_sectors = 0;
-                    self.audio_sector_counter = 1;
+                    self.audio_map_counter = 1;
                     self.decoding_audio_map = true;
-                    self.audio.left_state.reset();
-                    self.audio.right_state.reset();
+                    self.audio.map_left_state.reset();
+                    self.audio.map_right_state.reset();
                 }
             }
             0x3FC => {
@@ -378,7 +382,7 @@ pub fn get_sector_count_for_coding(coding: u8) -> u8 {
 impl Cdic {
     pub fn process_audio_map(&mut self) {
         if self.decode_addr == 0xFFFF {
-            self.audio_sector_counter = 0;
+            self.audio_map_counter = 0;
             self.audio_format_sectors = 0;
             self.decoding_audio_map = false;
             return;
@@ -388,7 +392,8 @@ impl Cdic {
 
         if addr + 12 >= CDIC_RAM_SIZE {
             self.decode_addr = 0xFFFF;
-            self.audio_sector_counter = 0;
+            self.audio_map_counter = 0;
+            self.audio_format_sectors = 0;
             self.decoding_audio_map = false;
             return;
         }
@@ -400,7 +405,7 @@ impl Cdic {
 
             self.decoding_audio_map = true;
             self.audio_format_sectors = get_sector_count_for_coding(coding);
-            self.audio_sector_counter = self.audio_format_sectors;
+            self.audio_map_counter = self.audio_format_sectors;
 
             let is_stereo = (coding & 0x03) == 0x01;
             let is_8bit = (coding & 0x30) == 0x10;
@@ -412,7 +417,7 @@ impl Cdic {
                     "CDIC DECODE AUDIO MAP: addr=0x{:04X}, coding=0x{:02X}, stereo={}, 8bit={}, rate={}",
                     addr, coding, is_stereo, is_8bit, sample_rate
                 );
-                self.audio.decode_sector(&self.ram[payload_start..payload_start + 2304], is_stereo, is_8bit, sample_rate);
+                self.audio.decode_audio_map_sector(&self.ram[payload_start..payload_start + 2304], is_stereo, is_8bit, sample_rate);
             }
 
             // Signal ABUF interrupt: alternate buffer is now free to be refilled by host
@@ -423,7 +428,8 @@ impl Cdic {
             let was_decoding = self.decoding_audio_map;
             info!("CDIC AUDIO MAP END: addr=0x{:04X}, coding=0xFF, was_decoding={}", addr, was_decoding);
             self.decode_addr = 0xFFFF;
-            self.audio_sector_counter = 0;
+            self.audio_map_counter = 0;
+            self.audio_format_sectors = 0;
             self.decoding_audio_map = false;
             if was_decoding {
                 self.audio_buffer |= 0x8000;
@@ -437,19 +443,16 @@ impl Cdic {
         // At 15,500,000 cycles/sec (SCC68070 master clock): 15,500,000 / 75 = 206,667 cycles/sector
         const CYCLES_PER_SECTOR: u32 = 206_700;
 
-        // 1. Audio tick (75 Hz) for audio maps and sector counter
+        // 1. Audio tick (75 Hz) for audio maps
         self.audio_cycle_accumulator += cycles;
         while self.audio_cycle_accumulator >= CYCLES_PER_SECTOR {
             self.audio_cycle_accumulator -= CYCLES_PER_SECTOR;
 
-            if self.audio_sector_counter > 0 {
-                self.audio_sector_counter -= 1;
-                if self.audio_sector_counter > 0 {
-                    continue;
-                }
+            if self.audio_map_counter > 0 {
+                self.audio_map_counter -= 1;
             }
 
-            if self.decoding_audio_map {
+            if self.decoding_audio_map && self.audio_map_counter == 0 {
                 self.process_audio_map();
             }
         }
@@ -638,7 +641,6 @@ impl Cdic {
                     let sample_rate = if (coding & 0x0C) == 0x04 { 18900 } else { 37800 };
 
                     self.audio_sector_counter = get_sector_count_for_coding(coding);
-                    self.decoding_audio_map = false;
 
                     self.audio.decode_sector(&sector_buf[24..24 + 2304], is_stereo, is_8bit, sample_rate);
                 }
@@ -665,40 +667,72 @@ impl Cdic {
             let tot_secs_bcd = ((total_secs / 10) << 4) | (total_secs % 10);
             let tot_frac_bcd = ((total_frac / 10) << 4) | (total_frac % 10);
 
-            // TOC entries: 5 bytes [Control, Point, PMIN, PSEC, PFRAC]
-            // For CD-i data discs, Control is 0x41 (Data track, ADR Mode 1)
-            let toc_packets: [[u8; 5]; 4] = [
-                [0x41, 0xA0, 0x01, 0x10, 0x00], // Packet A0: First track = 1, Disc type = 0x10 (CD-i)
-                [0x41, 0xA1, 0x01, 0x00, 0x00], // Packet A1: Last track = 1
-                [0x41, 0xA2, tot_mins_bcd, tot_secs_bcd, tot_frac_bcd], // Packet A2: Lead-out
-                [0x41, 0x01, 0x00, 0x02, 0x00], // Track 1 start (00:02:00) - 0x41 = Data track
-            ];
+            let first_track = cd.tracks.first().map(|t| t.number).unwrap_or(1);
+            let last_track = cd.tracks.last().map(|t| t.number).unwrap_or(1);
+            let first_bcd = ((first_track / 10) << 4) | (first_track % 10);
+            let last_bcd = ((last_track / 10) << 4) | (last_track % 10);
+
+            let mut toc_packets: Vec<[u8; 5]> = Vec::with_capacity(3 + cd.tracks.len());
+            // Packet A0: First track = 1, Disc type = 0x10 (CD-i) or 0x20 (CD-ROM XA / Video CD)
+            toc_packets.push([0x41, 0xA0, first_bcd, cd.disc_type, 0x00]);
+            // Packet A1: Last track
+            toc_packets.push([0x41, 0xA1, last_bcd, 0x00, 0x00]);
+            // Packet A2: Lead-out
+            toc_packets.push([0x41, 0xA2, tot_mins_bcd, tot_secs_bcd, tot_frac_bcd]);
+
+            // Track start packets: [Control, Point, PMIN, PSEC, PFRAC]
+            for t in &cd.tracks {
+                let start_abs = t.start_lba + 150;
+                let tm = (start_abs / (60 * 75)) as u8;
+                let ts = ((start_abs / 75) % 60) as u8;
+                let tf = (start_abs % 75) as u8;
+                let tm_bcd = ((tm / 10) << 4) | (tm % 10);
+                let ts_bcd = ((ts / 10) << 4) | (ts % 10);
+                let tf_bcd = ((tf / 10) << 4) | (tf % 10);
+                let num_bcd = ((t.number / 10) << 4) | (t.number % 10);
+                toc_packets.push([t.control, num_bcd, tm_bcd, ts_bcd, tf_bcd]);
+            }
 
             let pkt_idx = ((self.curr_lba as usize) / 3) % toc_packets.len();
             let toc_data = toc_packets[pkt_idx];
 
             [
-                toc_data[0], // [0] Control / ADR (0x41)
+                toc_data[0], // [0] Control / ADR (0x41 or 0x01)
                 0x00,        // [1] Track (0x00 in lead-in)
-                toc_data[1], // [2] Index / Point (0xA0, 0xA1, 0xA2, 0x01)
+                toc_data[1], // [2] Index / Point (0xA0, 0xA1, 0xA2, 0x01, 0x02...)
                 0xA0,        // [3] MINS
                 secs_bcd,    // [4] SECS
                 frac_bcd,    // [5] FRAC
                 0x00,        // [6] Zero
                 toc_data[2], // [7] PMIN
-                toc_data[3], // [8] PSEC (0x10 for CD-i on A0)
+                toc_data[3], // [8] PSEC
                 toc_data[4], // [9] PFRAC
                 0xFF,        // [10] CRC0 (init)
                 0xFF,        // [11] CRC1 (init)
             ]
         } else {
+            let (cur_track_num, cur_track_ctrl, rel_lba) = if let Some(t) = cd.tracks.iter().find(|t| self.curr_lba >= t.start_lba && self.curr_lba < t.start_lba + t.length_sectors) {
+                (t.number, t.control, self.curr_lba - t.start_lba)
+            } else {
+                (1, 0x41, self.curr_lba)
+            };
+
+            let rel_msf = rel_lba;
+            let rel_m = (rel_msf / (60 * 75)) as u8;
+            let rel_s = ((rel_msf / 75) % 60) as u8;
+            let rel_f = (rel_msf % 75) as u8;
+            let rel_m_bcd = ((rel_m / 10) << 4) | (rel_m % 10);
+            let rel_s_bcd = ((rel_s / 10) << 4) | (rel_s % 10);
+            let rel_f_bcd = ((rel_f / 10) << 4) | (rel_f % 10);
+            let track_bcd = ((cur_track_num / 10) << 4) | (cur_track_num % 10);
+
             [
-                0x41, // Control
-                0x01, // Track
-                0x01, // Index
-                mins_bcd, secs_bcd, frac_bcd,
+                cur_track_ctrl, // Control
+                track_bcd,      // Track
+                0x01,           // Index
+                rel_m_bcd, rel_s_bcd, rel_f_bcd, // Track relative MSF
                 0x00,
-                mins_bcd, secs_bcd, frac_bcd,
+                mins_bcd, secs_bcd, frac_bcd,    // Absolute disc MSF
                 0xFF, 0xFF // CRC (init)
             ]
         };

@@ -90,6 +90,14 @@ impl SlaveHle {
         self.prepare_readback(3, &[0xB0, 0x00, disc_byte, 0x15], 0xB0, true);
     }
 
+    pub fn notify_disc_swapped(&mut self) {
+        self.has_disc = true;
+        self.disc_timer = 0;
+        self.disc_state = 0x41;
+        info!("Slave: notify_disc_swapped -> sending tray open (0x00) then spinup (0x41 -> 0x44)");
+        self.prepare_readback(3, &[0xB0, 0x00, 0x00, 0x15], 0xB0, true);
+    }
+
     pub fn tick(&mut self, cycles: u32) {
         if self.has_disc && self.disc_state == 0x41 {
             self.disc_timer += cycles;
@@ -144,6 +152,8 @@ impl SlaveHle {
                     } else if ch.in_index == ch.in_count {
                         self.device_mouse_x = (((ch.in_buf[1] & 0x70) as i32) << 3) | ((ch.in_buf[2] & 0x7F) as i32);
                         self.device_mouse_y = (((ch.in_buf[1] & 0x0F) as i32) << 6) | ((ch.in_buf[0] & 0x3F) as i32);
+                        self.input_mouse_x = self.device_mouse_x;
+                        self.input_mouse_y = self.device_mouse_y;
                         self.device_mouse_updated = true;
                         ch.in_index = 0;
                         ch.in_count = 0;

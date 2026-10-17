@@ -31,6 +31,7 @@ pub const ID_VIDEO_SCREENSHOT: usize = 1031;
 pub const ID_VIDEO_PAL: usize = 1032;
 pub const ID_VIDEO_NTSC: usize = 1033;
 pub const ID_EMU_WAITSTATES: usize = 1050;
+pub const ID_EMU_DVC: usize = 1051;
 
 pub const ID_HELP_CONTROLS: usize = 1040;
 pub const ID_HELP_ABOUT: usize = 1041;
@@ -377,6 +378,7 @@ pub enum GuiAction {
     TakeScreenshot,
     SetVideoMode(crate::mcd212::VideoMode),
     ToggleWaitStates,
+    ToggleDvc,
     ShowHelp,
     ShowAbout,
 }
@@ -476,6 +478,21 @@ pub fn update_waitstates_menu(enabled: bool) {
                 MENU_HANDLE,
                 ID_EMU_WAITSTATES as u32,
                 MF_BYCOMMAND | if enabled { MF_CHECKED } else { MF_UNCHECKED },
+            );
+            if !OWNER_HWND.is_null() {
+                DrawMenuBar(OWNER_HWND);
+            }
+        }
+    }
+}
+
+pub fn update_dvc_menu(fitted: bool) {
+    unsafe {
+        if !MENU_HANDLE.is_null() {
+            CheckMenuItem(
+                MENU_HANDLE,
+                ID_EMU_DVC as u32,
+                MF_BYCOMMAND | if fitted { MF_CHECKED } else { MF_UNCHECKED },
             );
             if !OWNER_HWND.is_null() {
                 DrawMenuBar(OWNER_HWND);
@@ -590,6 +607,10 @@ unsafe extern "system" fn custom_wndproc(
                 push_action(GuiAction::ToggleWaitStates);
                 return 0;
             }
+            ID_EMU_DVC => {
+                push_action(GuiAction::ToggleDvc);
+                return 0;
+            }
             ID_HELP_CONTROLS => {
                 show_controls_dialog(hwnd);
                 return 0;
@@ -678,6 +699,7 @@ pub fn attach_gui_menu(
         AppendMenuW(video_menu, MF_STRING, ID_VIDEO_NTSC, to_wide("NTSC (60 Hz)").as_ptr());
         AppendMenuW(video_menu, MF_SEPARATOR, 0, std::ptr::null());
         AppendMenuW(video_menu, MF_STRING | MF_CHECKED, ID_EMU_WAITSTATES, to_wide("Velocità Hardware Reale CD-i (Wait-States)").as_ptr());
+        AppendMenuW(video_menu, MF_STRING | MF_CHECKED, ID_EMU_DVC, to_wide("Cartuccia Digital Video (DVC) [vmpega.rom]").as_ptr());
         AppendMenuW(main_menu, MF_POPUP, video_menu as usize, to_wide("Video").as_ptr());
 
         // 5. Menu Aiuto
@@ -724,7 +746,7 @@ pub fn open_file_dialog(owner: *mut std::ffi::c_void) -> Option<PathBuf> {
     ofn.lpstrFile = file_buf.as_mut_ptr();
     ofn.nMaxFile = file_buf.len() as u32;
     ofn.lpstrTitle = title.as_ptr();
-    ofn.Flags = 0x00000800 | 0x00001000 | 0x00000004; // OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST | OFN_HIDEREADONLY
+    ofn.Flags = 0x00000800 | 0x00001000 | 0x00000004 | 0x00000008; // OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST | OFN_HIDEREADONLY | OFN_NOCHANGEDIR
 
     unsafe {
         if GetOpenFileNameW(&mut ofn) != 0 {

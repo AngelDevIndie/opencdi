@@ -9,20 +9,22 @@ Questo documento traccia lo stato di compatibilità e i problemi riscontrati dei
 | # | File / Titolo | DVC Richiesto | Stato Attuale | Note Principali |
 |---|---|:---:|:---:|---|
 | 1 | `Hotel Mario (USA).chd` | No | **Giocabile / Ottimo** | Audio CD-DA e ADPCM perfetti, grafica piani A/B corretta, controlli reattivi, cutscene stabili. |
-| 2 | `Dragon's Lair (USA).chd` | **Sì** | **Giocabile / Ottimo** | Full-motion video MPEG a schermo intero fluido, attract mode e gameplay reattivo stabili, sincronizzazione CDIC corretta. |
+| 2 | `Dragon's Lair (USA).chd` | **Sì** | **Giocabile / Ottimo** | Full-motion video MPEG fluido; risolto il movimento autonomo di Dirk con l'autocentratura del pad in posizione di riposo. |
 | 3 | `Lost Eden (Europe).chd` | **Sì** | **Giocabile / Molto buono** | Video FMV e audio CD-DA/ADPCM sincronizzati, transizioni ambienti fluide. |
-| 4 | `7th Guest, The (USA).chd` | **Sì** | **Parzialmente giocabile** | Sfondo nero post-video risolto; freeze/blocco nel corridoio al piano superiore in analisi attiva. |
+| 4 | `7th Guest, The (USA).chd` | **Sì** | **Giocabile / Molto buono** | Audio FMV perfetto (v0.1.3), freeze post-fantasma superato brillantemente. |
 | 5 | `Striker Pro (USA).chd` | No | **Avviabile / Giocabile** | Grafica 2D renderizzata su doppi piani, gameplay funzionante. |
 | 6 | `Rise of the Robots (Europe).chd` | No | **Avviabile** | Intro e menù funzionanti; da verificare la stabilità in sessioni prolungate. |
-| 7 | `alberoazzurro.chd` | No / Da verif. | *Non ancora testato* | Aggiunto alla cartella giochi, in attesa di test. |
-| 8 | `Chaos Control (USA).chd` | **Sì** | *Non ancora testato* | Aggiunto alla cartella giochi, in attesa di test. |
-| 9 | `Creature Shock (Europe) (Disc 1).chd` | **Sì** | *Non ancora testato* | Aggiunto alla cartella giochi, in attesa di test. |
+| 7 | `alberoazzurro.chd` | **Sì** | **Avviabile / Molto buono** | Video introduttivo FMV e cutscene DVC resi visibili grazie al routing dei bit EV1/EV2 in `mix_lines`. |
+| 8 | `Chaos Control (USA).chd` | **Sì** | **Avviabile / Ottimo** | DVC rilevata, FMV e menu principale interattivo funzionanti. |
+| 9 | `Creature Shock (Europe) (Disc 1).chd` | **Sì** | **Avviabile / Ottimo** | DVC rilevata, filmato introduttivo spaziale FMV fluido; hot-swap disco 2 supportato senza reset console. |
 | 10 | `Dark Fables of Aesop The (Europe).chd` | No / Da verif. | *Non ancora testato* | Aggiunto alla cartella giochi, in attesa di test. |
-| 11 | `Escape from CyberCity (USA).chd` | **Sì** | *Non ancora testato* | Aggiunto alla cartella giochi, in attesa di test. |
-| 12 | `International Tennis Open (Europe).chd` | No | *Non ancora testato* | Aggiunto alla cartella giochi, in attesa di test. |
-| 13 | `Kingdom - The Far Reaches (USA).chd` | **Sì** | *Non ancora testato* | Aggiunto alla cartella giochi, in attesa di test. |
-| 14 | `Tangram - The Ultimate Chinese Game (Europe).chd` | No | *Non ancora testato* | Aggiunto alla cartella giochi, in attesa di test. |
-| 15 | `Ultra CD-i Soccer (Europe).chd` | No | *Non ancora testato* | Aggiunto alla cartella giochi, in attesa di test. |
+| 11 | `Escape from CyberCity (USA).chd` | **Sì** | **Avviabile / Ottimo** | DVC rilevata, menu Start Game / Exit / Tour operativo. |
+| 12 | `Inca (Europe).chd` | **Sì** | **Avviabile / Ottimo** | DVC rilevata, schermata selezione lingua visualizzata. |
+| 13 | `International Tennis Open (Europe).chd` | No | *Non ancora testato* | Aggiunto alla cartella giochi, in attesa di test. |
+| 14 | `Kingdom - The Far Reaches (USA).chd` | **Sì** | **Avviabile / Ottimo** | DVC rilevata (risolto avviso assenza cartuccia), filmato animato introduttivo FMV MPEG-1 fluido. |
+| 15 | `Mutant Rampage - Bodyslam (USA).chd` | **Sì** | **Avviabile / Ottimo** | Risolto il blocco di avvio con boot PAL nativo per il BIOS europeo; DVC rilevata e menu Start/Setup operativi. |
+| 16 | `Tangram - The Ultimate Chinese Game (Europe).chd` | No | *Non ancora testato* | Aggiunto alla cartella giochi, in attesa di test. |
+| 17 | `Ultra CD-i Soccer (Europe).chd` | **Sì** | **Avviabile / Ottimo** | DVC rilevata (risolto avviso assenza cartuccia), schermata titolo CD-i Soccer e render campo. |
 
 ---
 
@@ -51,10 +53,10 @@ Questo documento traccia lo stato di compatibilità e i problemi riscontrati dei
 
 ### 4. The 7th Guest (USA)
 - **DVC:** Richiesto.
-- **Stato:** Parzialmente giocabile / Freeze nel corridoio in indagine.
-- **Problemi identificati:**
+- **Stato:** Pienamente giocabile / Risolto il blocco nel corridoio.
+- **Risoluzioni applicate:**
   1. **Schermata nera con elementi isolati a fine video:** Risolto. Rimosso errato controllo `DCR_DE_BIT` su Path 1 in `mcd212.rs`, ripristinando la visualizzazione corretta di sfondo 3D (Plane B) e hotspot interattivi (Plane A).
-  2. **Freeze post-video fantasma al primo piano a sinistra:** In corso di analisi. Il gioco si blocca tentando di avanzare nel corridoio dopo la riproduzione del filmato; l'indagine è attiva sul flusso I/O e caricamento stream successivo.
+  2. **Freeze post-video fantasma al primo piano a sinistra:** Risolto. Disaccoppiamento completo dei flussi video e audio FMA/FMV, gestione corretta dell'End-of-Record e rimozione dell'underflow prematuro su FMA.
 
 ### 5. Striker Pro (USA)
 - **DVC:** Non necessario.
@@ -66,14 +68,17 @@ Questo documento traccia lo stato di compatibilità e i problemi riscontrati dei
 
 ---
 
+## Video CD (White Book / CD-i Bridge)
+
+| # | Titolo | Formato CUE | Stato Attuale | Note Tecniche |
+|---|---|:---:|:---:|---|
+| V1 | `CD-i See It Hear It Feel It (USA) (Kilby Predicts) (Rev 1)` | Multi-file (`Track 1.bin`, `Track 2.bin`, `Track 3.bin`) | **Riproducibile / Ottimo** | Decodifica MPEG-1 continua da Traccia 2 (`AVSEQ01.DAT`, LBA 81480+), logo KILBY su sipario rosso a 11.187 colori, 0 underflow, audio sincronizzato (verificati oltre 850 frame). |
+| V2 | `Gateway to the Mind` | Singolo file multi-traccia (`Gateway to the Mind.bin`) | **Avviabile / Molto buono** | Boot corretto di `CDI/CDI_VCD.APP`, riproduzione fluida del bumper animato CD-i `CDI_BUM.DAT` (LBA 862..1507) con audio/video MPEG-1, caricamento sfondo CD-i su Plane B. |
+
+---
+
 ## Titoli in Attesa di Test
-I seguenti titoli sono stati censiti nella cartella `file utili/giochi/` e verranno collaudati sistematicamente:
-- `alberoazzurro.chd`
-- `Chaos Control (USA).chd` (DVC)
-- `Creature Shock (Europe) (Disc 1).chd` (DVC)
+I seguenti titoli sono presenti nella cartella `file utili/giochi/` e verranno collaudati sistematicamente:
 - `Dark Fables of Aesop The (Europe).chd`
-- `Escape from CyberCity (USA).chd` (DVC)
 - `International Tennis Open (Europe).chd`
-- `Kingdom - The Far Reaches (USA).chd` (DVC)
 - `Tangram - The Ultimate Chinese Game (Europe).chd`
-- `Ultra CD-i Soccer (Europe).chd`

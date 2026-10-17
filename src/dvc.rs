@@ -61,7 +61,8 @@ pub const FMA_IRQ_POLL: u16  = 1 << 8;  // 0x0100: Timer tick
 
 pub struct Mp2Decoder {
     state: oxideav_mp2::frame::FrameDecodeState,
-    pub pcm: VecDeque<i16>,
+    pub pcm: VecDeque<(f32, f32)>,
+    pub last_sample_rate: u32,
     pub errors: u64,
     pub resync_bytes: u64,
     pub synchronized: bool,
@@ -74,6 +75,7 @@ impl Default for Mp2Decoder {
         Self {
             state: oxideav_mp2::frame::FrameDecodeState::default(),
             pcm: VecDeque::new(),
+            last_sample_rate: 44_100,
             errors: 0,
             resync_bytes: 0,
             synchronized: false,
@@ -124,18 +126,18 @@ impl Mp2Decoder {
             let contiguous = input.make_contiguous();
             match oxideav_mp2::frame::decode_frame_with(&contiguous[..frame_size], &mut self.state) {
                 Ok(frame) => {
+                    if frame.header.sample_rate > 0 {
+                        self.last_sample_rate = frame.header.sample_rate;
+                    }
                     if self.conceal_discontinuity_frame {
                         if scanned != 0 {
-                            Self::append_silence(
-                                &mut self.pcm,
-                                frame.pcm.first().map_or(0, Vec::len),
-                                frame.header.sample_rate,
-                            );
+                            let samples = frame.pcm.first().map_or(0, Vec::len);
+                            self.pcm.extend(std::iter::repeat((0.0f32, 0.0f32)).take(samples));
                             self.concealed_frames += 1;
                         }
                         self.conceal_discontinuity_frame = false;
                     }
-                    Self::append_resampled(&mut self.pcm, &frame.pcm, frame.header.sample_rate);
+                    Self::append_native(&mut self.pcm, &frame.pcm);
                     input.drain(..frame_size);
                     decoded += 1;
                     self.synchronized = true;
@@ -151,27 +153,15 @@ impl Mp2Decoder {
         decoded
     }
 
-    fn append_resampled(output: &mut VecDeque<i16>, channels: &[Vec<f64>], sample_rate: u32) {
+    fn append_native(output: &mut VecDeque<(f32, f32)>, channels: &[Vec<f64>]) {
         let Some(left) = channels.first() else { return; };
         let right = channels.get(1).unwrap_or(left);
-        let out_len = ((left.len() as u64 * 37_800 + u64::from(sample_rate) / 2)
-            / u64::from(sample_rate)) as usize;
-        for out_index in 0..out_len {
-            let source_pos = out_index as f64 * f64::from(sample_rate) / 37_800.0;
-            let index = source_pos.floor() as usize;
-            let fraction = source_pos - index as f64;
-            let next = (index + 1).min(left.len() - 1);
-            for channel in [left, right] {
-                let sample = channel[index] + (channel[next] - channel[index]) * fraction;
-                output.push_back((sample * 32_768.0).clamp(-32_768.0, 32_767.0) as i16);
-            }
+        for (&l, &r) in left.iter().zip(right.iter()) {
+            output.push_back((
+                (l as f32).clamp(-1.0, 1.0),
+                (r as f32).clamp(-1.0, 1.0),
+            ));
         }
-    }
-
-    fn append_silence(output: &mut VecDeque<i16>, samples: usize, sample_rate: u32) {
-        let out_len = ((samples as u64 * 37_800 + u64::from(sample_rate) / 2)
-            / u64::from(sample_rate)) as usize;
-        output.extend(std::iter::repeat(0).take(out_len.saturating_mul(2)));
     }
 }
 
@@ -422,15 +412,21 @@ pub struct Dvc {
     pub display_frame_counter: u32,
     pub decoder_frame_counter: u32,
     pub fps: f64,
+    pub frame_accum: f64,
+    pub vsync_hz: f64,
 
     // Stream & Demux
     pub dvc_stream_fifo: Vec<u8>,
+    pub fma_stream_fifo: Vec<u8>,
     pub transfer_for_fma: bool,
+    pub fma_dma_seen: bool,
     pub dma_requested: bool,
     pub framebuffer: Box<[u32; 352 * 288]>,
 
     pub demux: MpegSystemDemux,
+    pub fma_demux: MpegSystemDemux,
     pub mp2: Mp2Decoder,
+    pub audio_sample_rate: u32,
     pub audio_out: VecDeque<(f32, f32)>,
 
     pub video_decoder: Option<Video>,
@@ -440,6 +436,7 @@ pub struct Dvc {
     pub frames_presented_count: usize,
     pub vsync_counter: usize,
     pub underflow_count: u32,
+    pub fma_underflow_count: u32,
 }
 
 impl Dvc {
@@ -484,14 +481,20 @@ impl Dvc {
             display_frame_counter: 0,
             decoder_frame_counter: 0,
             fps: 25.0,
+            frame_accum: 0.0,
+            vsync_hz: 50.0,
 
             dvc_stream_fifo: Vec::with_capacity(128 * 1024),
+            fma_stream_fifo: Vec::with_capacity(64 * 1024),
             transfer_for_fma: false,
+            fma_dma_seen: false,
             dma_requested: false,
             framebuffer: vec![0xFF00_0000; 352 * 288].into_boxed_slice().try_into().unwrap(),
 
             demux: MpegSystemDemux::default(),
+            fma_demux: MpegSystemDemux::default(),
             mp2: Mp2Decoder::default(),
+            audio_sample_rate: 44_100,
             audio_out: VecDeque::with_capacity(16 * 1024),
 
             video_decoder: None,
@@ -501,6 +504,7 @@ impl Dvc {
             frames_presented_count: 0,
             vsync_counter: 0,
             underflow_count: 0,
+            fma_underflow_count: 0,
         };
         d.reset_regs();
         d
@@ -520,8 +524,26 @@ impl Dvc {
     }
 
     pub fn reset_stream(&mut self) {
+        self.video_playing = false;
+        self.video_armed = false;
+        self.decoder_enabled = false;
+        self.audio_armed = false;
+        self.audio_enabled = false;
+        self.vcd_pixel_clock_13_5 = false;
+        self.fmv_playback_active = false;
+        self.fmv_decoder_active = false;
+        self.dma_requested = false;
+        self.total_cycles = 0;
+        self.dclk = 0;
+        self.dclk_accum = 0;
+        self.timer_accum = 0;
+        self.timer_counter = 0;
         self.dvc_stream_fifo.clear();
+        self.fma_stream_fifo.clear();
+        self.transfer_for_fma = false;
+        self.fma_dma_seen = false;
         self.demux.clear();
+        self.fma_demux.clear();
         self.mp2.reset();
         self.audio_out.clear();
         self.video_decoder = None;
@@ -529,10 +551,13 @@ impl Dvc {
         self.frames_presented_count = 0;
         self.vsync_counter = 0;
         self.underflow_count = 0;
+        self.fma_underflow_count = 0;
+        self.frame_accum = 0.0;
         self.display_timecode = 0;
         self.decoder_timecode = 0;
         self.display_frame_counter = 0;
         self.decoder_frame_counter = 0;
+        self.framebuffer.fill(0xFF00_0000);
     }
 
     pub fn reset_regs(&mut self) {
@@ -678,8 +703,10 @@ impl Dvc {
             let compare = self.get_fmv_word(FMV_TIMER);
             if compare > 0 && self.timer_counter >= compare {
                 self.timer_counter = 0;
-                if self.video_playing || self.decoder_enabled {
+                if (self.get_fma_word(FMA_IER) & FMA_IRQ_POLL) != 0 {
                     self.or_fma_word(FMA_ISR, FMA_IRQ_POLL);
+                }
+                if (self.get_fmv_word(FMV_IER) & FMV_IRQ_TIM) != 0 {
                     self.or_fmv_word(FMV_ISR, FMV_IRQ_TIM);
                 }
             } else if compare > 0 {
@@ -711,12 +738,17 @@ impl Dvc {
         if self.audio_enabled {
             self.fma_regs[0x18] |= 1;
         }
-        if self.demux.audio.len() >= 4 {
+        let audio_src = if !self.fma_demux.audio.is_empty() {
+            &self.fma_demux.audio
+        } else {
+            &self.demux.audio
+        };
+        if audio_src.len() >= 4 {
             let header = [
-                self.demux.audio[0],
-                self.demux.audio[1],
-                self.demux.audio[2],
-                self.demux.audio[3],
+                audio_src[0],
+                audio_src[1],
+                audio_src[2],
+                audio_src[3],
             ];
             self.fma_regs[0x14..0x18].copy_from_slice(&header);
         }
@@ -837,6 +869,8 @@ impl Dvc {
                 if value & 0x0001 != 0 { // STOP
                     self.audio_armed = false;
                     self.audio_enabled = false;
+                    self.fma_stream_fifo.clear();
+                    self.fma_demux.clear();
                     self.mp2.reset();
                     self.set_fma_word(0x02, 0x0200);
                     self.set_fma_word(FMA_ISR, 0);
@@ -856,6 +890,7 @@ impl Dvc {
             }
             FMA_STREAM => {
                 let selected = (value & 0x1F) as u8;
+                self.fma_demux.selected_audio_stream = Some(selected);
                 self.demux.selected_audio_stream = Some(selected);
             }
             FMA_ISR => {
@@ -895,9 +930,11 @@ impl Dvc {
                     self.video_decoder = None;
                     self.frames_presented_count = 0;
                     self.frames_decoded_count = 0;
+                    self.frame_accum = 0.0;
                     self.dvc_stream_fifo.clear();
                     self.demux.clear();
                     self.set_fmv_word(0x5C, 0x0000);
+                    self.framebuffer.fill(0xFF00_0000);
                 }
                 if value & 0x0100 != 0 { // RESET
                     self.video_playing = false;
@@ -915,6 +952,8 @@ impl Dvc {
                     self.video_decoder = None;
                     self.frames_presented_count = 0;
                     self.frames_decoded_count = 0;
+                    self.frame_accum = 0.0;
+                    self.framebuffer.fill(0xFF00_0000);
                 }
                 if value & 0x8000 != 0 { // DMA request Video
                     self.dma_requested = true;
@@ -949,23 +988,50 @@ impl Dvc {
         }
     }
 
+    pub fn push_fma_stream_byte(&mut self, byte: u8) {
+        self.fma_dma_seen = true;
+        if self.fma_stream_fifo.len() < 1024 * 1024 {
+            self.fma_stream_fifo.push(byte);
+        }
+    }
+
     pub fn process_stream(&mut self) {
         if !self.dvc_stream_fifo.is_empty() {
             let bytes = std::mem::take(&mut self.dvc_stream_fifo);
             self.demux.feed(&bytes);
         }
+        if !self.fma_stream_fifo.is_empty() {
+            let bytes = std::mem::take(&mut self.fma_stream_fifo);
+            self.fma_demux.feed(&bytes);
+        }
 
-        // Process audio stream
+        // Process audio stream from fma_demux
+        if !self.fma_demux.audio.is_empty() {
+            let decoded = self.mp2.decode_available(&mut self.fma_demux.audio);
+            if decoded != 0 {
+                self.fma_underflow_count = 0;
+                self.audio_sample_rate = self.mp2.last_sample_rate;
+                self.or_fma_word(0x02, 0x0004);
+                self.or_fma_word(FMA_ISR, 0x0004);
+                while let Some(sample) = self.mp2.pcm.pop_front() {
+                    if self.audio_out.len() < 32 * 1024 {
+                        self.audio_out.push_back(sample);
+                    }
+                }
+            }
+        }
+
+        // Process audio stream if demux has any audio (fallback)
         if !self.demux.audio.is_empty() {
             let decoded = self.mp2.decode_available(&mut self.demux.audio);
             if decoded != 0 {
+                self.fma_underflow_count = 0;
+                self.audio_sample_rate = self.mp2.last_sample_rate;
                 self.or_fma_word(0x02, 0x0004);
                 self.or_fma_word(FMA_ISR, 0x0004);
-                while self.mp2.pcm.len() >= 2 {
-                    let l = self.mp2.pcm.pop_front().unwrap_or(0);
-                    let r = self.mp2.pcm.pop_front().unwrap_or(0);
+                while let Some(sample) = self.mp2.pcm.pop_front() {
                     if self.audio_out.len() < 32 * 1024 {
-                        self.audio_out.push_back((l as f32 / 32768.0, r as f32 / 32768.0));
+                        self.audio_out.push_back(sample);
                     }
                 }
             }
@@ -982,11 +1048,21 @@ impl Dvc {
             }
         }
 
-        // Check for program end (code 0xB9 in MPEG pack/system streams marks segment/program boundaries)
+        // Check for program end in video stream
         if self.demux.program_ends > 0 {
+            trace!(">>> [DVC FMV] PROGRAM END (0xB9) IN VIDEO STREAM (fma_dma_seen={})", self.fma_dma_seen);
             self.or_fmv_word(FMV_ISR, FMV_IRQ_EII | FMV_IRQ_ESI);
-            self.or_fma_word(FMA_ISR, FMA_IRQ_EOI);
+            if !self.fma_dma_seen {
+                self.or_fma_word(FMA_ISR, FMA_IRQ_EOI);
+            }
             self.demux.program_ends = 0;
+        }
+
+        // Check for program end in audio stream
+        if self.fma_demux.program_ends > 0 {
+            trace!(">>> [DVC FMA] PROGRAM END (0xB9) IN AUDIO STREAM");
+            self.or_fma_word(FMA_ISR, FMA_IRQ_EOI);
+            self.fma_demux.program_ends = 0;
         }
 
         // Update DTS if newly available
@@ -1029,6 +1105,25 @@ impl Dvc {
     pub fn on_vsync(&mut self) {
         self.process_stream();
 
+        // Check for FMA audio buffer drain / end of stream when audio is active
+        if self.audio_enabled || self.audio_armed {
+            let fma_drained = self.fma_stream_fifo.is_empty()
+                && self.fma_demux.audio.is_empty()
+                && self.demux.audio.is_empty();
+            if fma_drained {
+                self.fma_underflow_count = self.fma_underflow_count.saturating_add(1);
+                if self.fma_underflow_count == 10 {
+                    trace!(">>> [DVC FMA] AUDIO BUFFER DRAINED (raising FMA_IRQ_EOI | FMA_IRQ_UNF)");
+                    self.or_fma_word(FMA_ISR, FMA_IRQ_EOI | FMA_IRQ_UNF);
+                    self.or_fma_word(0x02, 0x0008);
+                } else if self.fma_underflow_count > 10 && self.fma_underflow_count % 15 == 0 {
+                    self.or_fma_word(FMA_ISR, FMA_IRQ_EOI | FMA_IRQ_UNF);
+                }
+            } else {
+                self.fma_underflow_count = 0;
+            }
+        }
+
         // Always raise VSYNC in ISR on every vertical blank interval (matches hardware VMPEG ASIC)
         self.or_fmv_word(FMV_ISR, FMV_IRQ_VSYNC);
 
@@ -1040,8 +1135,21 @@ impl Dvc {
             }
         }
 
-        // Present video every 2 fields (25 fps on 50 Hz PAL)
-        if self.vsync_counter % 2 == 0 {
+        // Fractional frame presentation
+        let fps = if self.fps > 0.0 { self.fps } else { 25.0 };
+        let vsync_hz = if self.vsync_hz > 0.0 { self.vsync_hz } else { 50.0 };
+        if self.video_playing || self.decoder_enabled || self.video_decoder.is_some() {
+            self.frame_accum += fps / vsync_hz;
+        } else {
+            self.frame_accum = 0.0;
+        }
+
+        if self.frame_accum >= 1.0 {
+            self.frame_accum -= 1.0;
+            if self.frame_accum >= 1.0 {
+                self.frame_accum = self.frame_accum.min(1.0);
+            }
+
             let mut decoded_w = 0;
             let mut decoded_h = 0;
             let mut got_frame = false;
@@ -1098,29 +1206,29 @@ impl Dvc {
                 self.underflow_count = self.underflow_count.saturating_add(1);
 
                 if sequence_ended || (buffer_drained && self.underflow_count >= 15) {
-                    // Stream finished: either explicit sequence_end_code (0xB7)
-                    // or complete FIFO/demux/bitstream buffer drain after presenting frames.
-                    trace!(">>> [DVC] END OF SEQUENCE / DRAIN after {} frames (underflow={})", self.frames_decoded_count, self.underflow_count);
-                    self.or_fmv_word(FMV_ISR, FMV_IRQ_EOD | FMV_IRQ_ESI);
+                    trace!(">>> [DVC] END OF SEQUENCE / DRAIN after {} frames (seq_end={}, underflow={})", self.frames_decoded_count, sequence_ended, self.underflow_count);
+                    self.or_fmv_word(FMV_ISR, FMV_IRQ_EOD | FMV_IRQ_ESI | FMV_IRQ_NDAT);
                     self.or_fma_word(FMA_ISR, FMA_IRQ_EOI);
                     self.set_fmv_word(0x5C, 0x0000); // Return display status to idle
                     self.video_playing = false;
                     self.video_armed = false;
                     self.decoder_enabled = false;
-                    self.audio_enabled = false;
-                    self.audio_armed = false;
                     self.underflow_count = 0;
                     self.video_decoder = None;
                     self.frames_presented_count = 0;
                     self.frames_decoded_count = 0;
+                    self.frame_accum = 0.0;
                     self.dvc_stream_fifo.clear();
                     self.demux.clear();
-                    self.mp2.reset();
+                    self.framebuffer.fill(0xFF00_0000);
                 } else {
-                    // Temporary buffer underflow while waiting for CDIC stream:
-                    // signal NDAT (No Data) only; the sequence is not over yet.
                     self.or_fmv_word(FMV_ISR, FMV_IRQ_NDAT);
                 }
+            } else if (self.get_fmv_word(FMV_IER) & FMV_IRQ_NDAT) != 0
+                && self.dvc_stream_fifo.is_empty()
+                && self.demux.video.is_empty()
+            {
+                self.or_fmv_word(FMV_ISR, FMV_IRQ_NDAT | FMV_IRQ_EOD | FMV_IRQ_ESI);
             }
         }
     }
@@ -1158,10 +1266,15 @@ impl Dvc {
 
     pub fn get_scanline(&self, active_line: usize, out: &mut [u32; 768]) {
         out.fill(0xFF00_0000);
+        let is_active = (self.video_playing || self.decoder_enabled || self.get_fmv_word(0x5C) != 0)
+            && (self.frames_decoded_count > 0 || self.frames_presented_count > 0);
+        if !is_active {
+            return;
+        }
+
         let disp_h = (self.get_fmv_word(0x04) as usize).min(288);
         let disp_h = if disp_h == 0 { 240 } else { disp_h };
         let reg_y = self.get_fmv_word(0x6C) as usize;
-        // If register 0x6C is at default (26) or not explicitly configured, center vertically
         let y_start = if reg_y > 0 && reg_y != 26 && reg_y <= 240 {
             reg_y
         } else {
@@ -1176,21 +1289,8 @@ impl Dvc {
             let x_start = (768usize.saturating_sub(disp_w * 2)) / 2;
             for dx in 0..disp_w {
                 let px_idx = dy * pitch + dx;
-                let pixel = if self.frames_decoded_count > 0 && px_idx < self.framebuffer.len() {
+                let pixel = if px_idx < self.framebuffer.len() {
                     self.framebuffer[px_idx]
-                } else if px_idx < self.framebuffer.len() && self.framebuffer[px_idx] != 0xFF00_0000 {
-                    self.framebuffer[px_idx]
-                } else if self.ram2_enabled {
-                    let b_idx = (px_idx * 2) & 0x7FFFE;
-                    let w = ((self.ram2[b_idx] as u16) << 8) | (self.ram2[b_idx + 1] as u16);
-                    if w != 0 {
-                        let r = (((w >> 10) & 0x1F) as u32) << 3;
-                        let g = (((w >> 5) & 0x1F) as u32) << 3;
-                        let b = ((w & 0x1F) as u32) << 3;
-                        0xFF00_0000 | (r << 16) | (g << 8) | b
-                    } else {
-                        0xFF00_0000
-                    }
                 } else {
                     0xFF00_0000
                 };

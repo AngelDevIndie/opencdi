@@ -19,7 +19,7 @@ use minifb::{Key, Window, WindowOptions};
 use crate::audio::HostAudioOutput;
 use crate::bus::CdiBus;
 use crate::gui::{
-    attach_gui_menu, pop_action, update_input_device_menu, update_profile_menu,
+    attach_gui_menu, pop_action, update_dvc_menu, update_input_device_menu, update_profile_menu,
     GuiAction, InputDeviceMode, InputProfile, KeyBindings,
 };
 use crate::mcd212::{SCREEN_WIDTH, SCREEN_HEIGHT};
@@ -104,12 +104,20 @@ fn set_mouse_confinement(_confined: bool, _hwnd: *mut std::ffi::c_void, _is_curr
 
 
 fn find_file(relative_subpath: &str) -> Option<PathBuf> {
-    let candidates = [
+    let mut candidates = vec![
         Path::new(relative_subpath).to_path_buf(),
         Path::new("..").join(relative_subpath),
         Path::new("file utili").join(relative_subpath),
         Path::new("..").join("file utili").join(relative_subpath),
     ];
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            candidates.push(exe_dir.join(relative_subpath));
+            candidates.push(exe_dir.join("..").join(relative_subpath));
+            candidates.push(exe_dir.join("file utili").join(relative_subpath));
+            candidates.push(exe_dir.join("..").join("file utili").join(relative_subpath));
+        }
+    }
     for c in &candidates {
         if c.exists() {
             return Some(c.clone());
@@ -188,24 +196,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         info!("Caricato NVRAM da {:?}", nvram_path);
     }
 
-    // 2b. Helper to detect DVC requirement
-    fn is_dvc_title(name: &str) -> bool {
-        let u = name.to_uppercase();
-        u.contains("LAIR")
-            || u.contains("GUEST")
-            || u.contains("EDEN")
-            || u.contains("MAD DOG")
-            || u.contains("SPACE ACE")
-            || u.contains("BRAIN DEAD")
-            || u.contains("VCD")
-            || u.contains("MPEG")
-            || u.contains("DIGITAL VIDEO")
+    // 2b. Load DVC ROM (Digital Video Cartridge) by default if present
+    let dvc_disabled = std::env::args().any(|a| a == "--no-dvc" || a == "--nodvc");
+    if !dvc_disabled {
+        if let Some(dvc_path) = find_file("dvc/vmpega.rom") {
+            if let Ok(_) = bus.load_dvc_rom(&dvc_path) {
+                info!("Caricata estensione Digital Video Cartridge (DVC) da {:?}", dvc_path);
+            }
+        } else {
+            info!("Nessuna ROM DVC (vmpega.rom) trovata in dvc/: avvio in modalità CD-i Base");
+        }
+    } else {
+        info!("Avvio forzato senza DVC (--no-dvc): modalità CD-i Base");
     }
 
     // 3. Optional Game Disc (from command line argument, or None for standalone BIOS)
     let mut current_game_name = "Nessun disco (BIOS Standalone)".to_string();
     let initial_disc = std::env::args().nth(1).and_then(|a| {
-        if a == "--bios" || a == "--standalone" {
+        if a == "--bios" || a == "--standalone" || a == "--no-dvc" || a == "--nodvc" {
             None
         } else {
             find_file(&a).or_else(|| {
@@ -224,23 +232,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .unwrap_or_else(|| "Gioco CD-i".to_string());
                 info!("Caricato disco di gioco all'avvio: {}", current_game_name);
 
-                if is_dvc_title(&current_game_name) {
-                    if let Some(dvc_path) = find_file("dvc/vmpega.rom") {
-                        if let Ok(_) = bus.load_dvc_rom(&dvc_path) {
-                            info!("Caricata estensione Digital Video Cartridge (DVC) da {:?}", dvc_path);
-                        }
-                    }
-                }
-
-                let name_upper = p.to_string_lossy().to_uppercase();
-                let mode = if name_upper.contains("USA") || name_upper.contains("JAPAN") || name_upper.contains("NTSC") || name_upper.contains("(US)") {
-                    info!("Rilevata immagine disco USA/Giappone: console impostata a NTSC 60 Hz");
-                    crate::mcd212::VideoMode::Ntsc
+                let name_upper = current_game_name.to_uppercase();
+                let is_ntsc = (name_upper.contains("(USA)") || name_upper.contains("(JAPAN)") || name_upper.contains("NTSC"))
+                    && bus.cdrom.as_ref().map_or(true, |cd| cd.disc_type != 0x20);
+                if is_ntsc {
+                    info!("Rilevato disco NTSC (USA/Japan): impostazione automatica modalità video NTSC 60 Hz");
+                    bus.set_video_mode(crate::mcd212::VideoMode::Ntsc);
                 } else {
-                    info!("Rilevata immagine disco PAL (Europa): 50 Hz / 312 linee");
-                    crate::mcd212::VideoMode::Pal
-                };
-                bus.set_video_mode(mode);
+                    info!("Console avviata in modalità standard PAL 50 Hz (BIOS cdi220b)");
+                    bus.set_video_mode(crate::mcd212::VideoMode::Pal);
+                }
             }
             Err(e) => error!("Errore caricamento disco di gioco da {:?}: {:?}", p, e),
         }
@@ -279,11 +280,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         let hwnd = window.get_window_handle();
         attach_gui_menu(hwnd, bindings.profile, input_device_mode, bus.mcd212.video_mode);
+        crate::gui::update_dvc_menu(bus.dvc.is_fitted());
     }
 
     // 8. Initialize Host Audio Playback
     let _host_audio = HostAudioOutput::try_start(
         bus.cdic.audio.sample_queue.clone(),
+        bus.cdic.audio.sfx_queue.clone(),
         bus.cdic.audio.source_rate.clone(),
     );
 
@@ -335,8 +338,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut exit_requested = false;
         while let Some(action) = pop_action() {
             match action {
-                GuiAction::InsertDisc(path) | GuiAction::OpenDisc(path) => {
-                    info!("Caricamento disco di gioco: {:?}", path);
+                GuiAction::InsertDisc(path) => {
+                    info!("Inserimento disco a caldo (Hot-Swap): {:?}", path);
+                    match bus.change_disc(&path) {
+                        Ok(_) => {
+                            current_game_name = path
+                                .file_stem()
+                                .map(|s| s.to_string_lossy().to_string())
+                                .unwrap_or_else(|| "Gioco CD-i".to_string());
+                            info!("Nuovo disco inserito a caldo con successo: {}", current_game_name);
+                        }
+                        Err(e) => {
+                            error!("Impossibile inserire a caldo il disco {:?}: {:?}", path, e);
+                        }
+                    }
+                }
+                GuiAction::OpenDisc(path) => {
+                    info!("Caricamento e avvio nuovo disco (Reset): {:?}", path);
                     match bus.load_cdrom(&path) {
                         Ok(_) => {
                             current_game_name = path
@@ -345,22 +363,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 .unwrap_or_else(|| "Gioco CD-i".to_string());
                             info!("Gioco caricato con successo: {}", current_game_name);
 
-                            if is_dvc_title(&current_game_name) {
+                            if !dvc_disabled && !bus.dvc.is_fitted() {
                                 if let Some(dvc_path) = find_file("dvc/vmpega.rom") {
                                     if let Ok(_) = bus.load_dvc_rom(&dvc_path) {
                                         info!("Caricata estensione Digital Video Cartridge (DVC) da {:?}", dvc_path);
+                                        #[cfg(target_os = "windows")]
+                                        crate::gui::update_dvc_menu(true);
                                     }
                                 }
-                            } else {
-                                bus.dvc = crate::dvc::Dvc::new();
                             }
 
-                            let name_upper = path.to_string_lossy().to_uppercase();
-                            let mode = if name_upper.contains("USA") || name_upper.contains("JAPAN") || name_upper.contains("NTSC") || name_upper.contains("(US)") {
-                                info!("Rilevata immagine disco USA/Giappone: console impostata a NTSC 60 Hz");
+                            let name_upper = current_game_name.to_uppercase();
+                            let is_ntsc = (name_upper.contains("(USA)") || name_upper.contains("(JAPAN)") || name_upper.contains("NTSC"))
+                                && bus.cdrom.as_ref().map_or(true, |cd| cd.disc_type != 0x20);
+                            let mode = if is_ntsc {
+                                info!("Rilevato disco NTSC (USA/Japan): impostazione automatica modalità video NTSC 60 Hz");
                                 crate::mcd212::VideoMode::Ntsc
                             } else {
-                                info!("Rilevata immagine disco PAL (Europa): 50 Hz / 312 linee");
                                 crate::mcd212::VideoMode::Pal
                             };
                             bus.set_video_mode(mode);
@@ -460,6 +479,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     crate::gui::update_waitstates_menu(bus.emulate_wait_states);
                     info!("Velocità Hardware Reale CD-i (Wait-States): {}", if bus.emulate_wait_states { "ABILITATA (Authentic CD-i 220)" } else { "DISABILITATA (Turbo Zero-Wait)" });
                 }
+                GuiAction::ToggleDvc => {
+                    if bus.dvc.is_fitted() {
+                        info!("Rimozione Cartuccia DVC (modalità CD-i Base)");
+                        bus.dvc = crate::dvc::Dvc::new();
+                        #[cfg(target_os = "windows")]
+                        crate::gui::update_dvc_menu(false);
+                    } else {
+                        if let Some(dvc_path) = find_file("dvc/vmpega.rom") {
+                            if let Ok(_) = bus.load_dvc_rom(&dvc_path) {
+                                info!("Inserita Cartuccia Digital Video (DVC) da {:?}", dvc_path);
+                                #[cfg(target_os = "windows")]
+                                crate::gui::update_dvc_menu(true);
+                            }
+                        } else {
+                            error!("Impossibile abilitare DVC: ROM vmpega.rom non trovata in dvc/");
+                        }
+                    }
+                    bus.reset_system();
+                    cpu.reset(&mut bus);
+                    frame_count = 0;
+                    disc_launched = false;
+                    shell_ready_count = 0;
+                    pad_x = 575;
+                    pad_y = 335;
+                    pad_active = false;
+                }
                 GuiAction::ShowHelp => {
                     #[cfg(target_os = "windows")]
                     crate::gui::show_controls_dialog(window.get_window_handle());
@@ -499,7 +544,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     bus.slave.update_mouse(575, 335, 0);
                 }
             }
-            if ((cpu.pc >= 0x00010000 && cpu.pc < 0x00300000) || (cpu.pc >= 0x00D00000 && cpu.pc < 0x00E00000)) && frame_count > 250 {
+            if ((cpu.pc >= 0x00010000 && cpu.pc < 0x00300000) || (cpu.pc >= 0x00D10000 && cpu.pc < 0x00E00000)) && frame_count > 250 {
                 info!("Applicazione disco in esecuzione in RAM (PC=0x{:06X}), controllo passato all'utente.", cpu.pc);
                 disc_launched = true;
                 bus.emulate_wait_states = true;
@@ -821,18 +866,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         } else {
             match input_device_mode {
                 InputDeviceMode::Gamepad => {
-                    let pad_speed = 8;
-                    let mut moved = false;
-                    if dir_x != 0 {
-                        pad_x = (pad_x + dir_x.clamp(-1, 1) * pad_speed).clamp(0, 767);
-                        moved = true;
-                    }
-                    if dir_y != 0 {
-                        pad_y = (pad_y + dir_y.clamp(-1, 1) * pad_speed).clamp(0, 559);
-                        moved = true;
-                    }
                     let combined_btn = key_btn | mouse_btn;
-                    if moved || combined_btn != prev_key_btn {
+                    if dir_x != 0 || dir_y != 0 || combined_btn != prev_key_btn {
+                        let pad_speed = 8;
+                        pad_x = (pad_x + dir_x.clamp(-1, 1) * pad_speed).clamp(0, 767);
+                        pad_y = (pad_y + dir_y.clamp(-1, 1) * pad_speed).clamp(0, 559);
                         bus.slave.update_mouse(pad_x, pad_y, combined_btn);
                     }
                     prev_key_btn = combined_btn;

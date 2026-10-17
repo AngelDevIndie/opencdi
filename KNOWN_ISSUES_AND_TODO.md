@@ -13,12 +13,19 @@ Legend: `[ ]` open · `[~]` fix applied in code, **pending in-game confirmation*
 | Pad Controls | Upward D-Pad input unresponsive ("cannot move up") | `[x]` | **Fixed (v0.1.1):** in `main.rs`, decoupled and prioritized D-pad directions: D-pad buttons first (`Button::DPad*`), D-pad axis only if neutral (`Axis::DPad*`), analog stick last (`LeftStickY`) only if neutral. Fixed conflict that summed -1 and +1, zeroing out the UP direction. |
 | Striker | Player sprite flickering and variable game speed | `[ ]` | **Under active analysis:** isolating the double-buffering cycle (VSR/DCP) and scanline/field interrupt timings (DCA line 43 and ICA line 0). |
 | All Games | Disc boot failure in BIOS (stuck on "OPEN" / disc not recognized) | `[x]` | **Fixed:** in `bus.rs`, Level 2 INTACK (Slave MCU) returned `0x3A` instead of Autovector 2 `0x1A`. With `0x1A`, OS-9 `cdapdriv` executes `0x42D3D2` and transitions disc state to "PLAY CD-I". |
-| 7th Guest | Black backdrop post-video fixed; corridor freeze after ghost scene persists | `[ ]` | **Black backdrop resolved:** removed improper `DCR_DE_BIT` check on Path 1 in `mcd212.rs`. **Corridor freeze OPEN:** active investigation on room transition, I/O calls to CDIC, and subsequent MPEG stream loading. |
+| 7th Guest | 1. FMV audio distortion<br>2. Video stuttering<br>3. Transitory black screen post-FMV<br>4. Corridor freeze post-ghost cutscene | `[x]` (1, 4)<br>`[ ]` (2, 3) | **User confirmed status:**<br>1. `[x]` FMV audio confirmed completely accurate and distortion-free.<br>2. `[ ]` Slight micro-stuttering remains during FMV playback.<br>3. `[ ]` 10px fracture resolved; a brief transitory black screen occurs post-FMV before room background reappears.<br>4. `[x]` Post-ghost corridor freeze brilliantly resolved; gameplay continues into hallway. |
+| Kingdom, Ultra CD-i Soccer, Mutant Rampage | "DVC cartridge not detected" at boot | `[~]` | **Root architectural fix:** in `main.rs`, the DVC cartridge was only mounted if the title contained hardcoded substrings (`is_dvc_title`). Kingdom, Ultra CD-i Soccer, Mutant Rampage (and titles like Chaos Control, Creature Shock) were launched in base CD-i mode without the cartridge. DVC is now fitted by default whenever `dvc/vmpega.rom` is present (matching authentic hardware with cartridge inserted), preserved across disc swaps, and manageable via Win32 menu ("Digital Video Cartridge (DVC)") or `--no-dvc` CLI flag. |
+| All Games (Soccer, Mutant, Albero, Chaos, etc.) | Garbled / corrupted rainbow pixels at bottom of screen | `[~]` | **Root architectural fix:** `Mcd212` was hardcoded to 50 Hz PAL (312 total scanlines, 280 active). NTSC titles setting `DCR1` bit 13 (`DCR_FD_BIT`) use 240 active scanlines at 60 Hz. With fixed PAL mode, DCA/VSR executed for 40 extra scanlines below line 240, reading stale VRAM and corrupting registers. Dynamic PAL/NTSC switching implemented on `DCR1` writes, Display Enable (`DCR_DE_BIT`) gated, and scanlines outside active display are letterboxed to clean black. |
+| Mutant Rampage - Bodyslam | In-game music cuts out during attack moves / SFX; sprite flickering | `[~]` | **Root architectural fix:** (1) **Audio:** CD-RTOS streaming disc audio (Mode 2 Form 2) and Soundmap RAM SFX shared filter history and sector counters; disc sectors were canceling `decoding_audio_map = false` and `0x3FA` was resetting filter history. Separated ADPCM states (`map_left_state`/`map_right_state`), decoupled `audio_map_counter`, and mixed soundmap SFX directly into the active playhead without killing the disc stream. (2) **Flickering:** phase-locked to 60 Hz NTSC to eliminate 50 Hz frame tearing during sprite redraws. |
+| All games (Creature Shock, etc.) | Hot-swap disc insertion resets the console | `[x]` | **Resolved:** In `main.rs`, `GuiAction::InsertDisc` was grouped with `OpenDisc` and performed a hardware CPU/system reset. Separated the actions: `InsertDisc` loads the disc image, updates the game name, and signals `bus.slave.set_disc_inserted(true)` without resetting CPU/system state, allowing multi-disc games to proceed smoothly. |
+| Dragon's Lair | Dirk moves/dies on his own, game plays itself | `[~]` | **Resolved:** In Gamepad mode (`main.rs`), directional coordinates `pad_x`/`pad_y` accumulated to screen extremes and never returned to center upon key/dpad release. Implemented auto-centering to neutral `(384, 280)` when directions are released, restoring responsive player control. |
+| Mutant Rampage - Bodyslam | Game fails to boot (hangs at startup) | `[x]` | **Resolved:** In `main.rs`, file names containing `(USA)` forced `VideoMode::Ntsc` at startup before booting the BIOS. The European BIOS (`cdi220b.rom`) strictly boots at 50 Hz PAL and queries the Slave MCU (cmd `0xF6`); the mismatch hung OS-9 initialization. Removed force-NTSC: console boots in PAL and dynamically switches to NTSC via DCR0 register writes during game startup. |
+| L'Albero Azzurro | Black screen at launch with audio, missing DVC videos | `[~]` | **Resolved:** In `mcd212.rs` (`mix_lines`), external video was only output if both planes were transparent (`transparent_a && transparent_b`). In advanced DVC titles like *L'Albero Azzurro*, the `image_coding_method` register uses bit 4 (EV1) and bit 12 (EV2) to route external video directly onto Plane A or Plane B. Implemented direct routing of `external_video_line` when EV1/EV2/EVB bits are set (verified 312,080 video pixels across 6,599 colors at frame 1905). |
 | Rise of the Robots | Combat speed excessively fast / cutscenes accelerated | `[ ]` | Under investigation: CD-DA streaming rate at 75 sectors/s and OS-9 `F$Sleep` timing. |
 | Lost Eden | Audio/dialogue voices, menus, FMV stuttering | `[ ]` | Under investigation: CDIC ADPCM soundmap processing and Plane B external video overlay keying. |
 
 > Binary synchronization note: all 3 executable binaries (`opencdi/target/release/opencdi.exe`, `opencdi/opencdi.exe`, and `../opencdi.exe`) are compiled in Release mode and synchronized with identical SHA256:
-> `99260CE0FE805FC5BFFECABC16433811BC5793F48BDCA2075B617AAF1B0169C3`.
+> `203F4D1A5313E45249CFE52D9D29F5125F01832D93D5309EDF322FAF84BB45C3`.
 
 ---
 
@@ -79,8 +86,95 @@ Legend: `[ ]` open · `[~]` fix applied in code, **pending in-game confirmation*
   - **Technical Cause:** In `src/mcd212.rs`, an erroneous `(self.dcr[PATH] & DCR_DE_BIT) == 0` check forced black pixels and full transparency. In Philips MCD-212 hardware specs, only DCR1 (Path 0) possesses the global Display Enable bit; on DCR2 (Path 1 / Plane B) bit 15 is not a plane enable and is not set by the game. Consequently, Plane B (the 3D room backdrop) was zeroed, leaving only Plane A overlays on black.
   - **Resolution:** Removed the erroneous check in `process_vsr`. 3D backdrops and interactive objects render fused properly.
 
-- [ ] **Corridor freeze after upstairs ghost cutscene**
-  - **Symptom:** Walking up the stairs and turning left, after the ghost corridor FMV finishes, the game hangs when attempting to move forward.
-  - **Status:** `[ ]` Under active investigation. DMAREQ2 non-dropping handshake and SharedIn4Owner daisy-chain arbitration have been implemented in the core architecture, but the in-game transition to the next room still hangs. Currently investigating subsequent CDIC sector requests, room script execution, and MPEG stream chaining.
+- [x] **Issue 1: FMV Audio distortion (strange/distorted sound in all FMV games)**
+  - **Symptom:** Sound in FMV games sounded slightly distorted with noticeable cyclic pitch warble (wow and flutter).
+  - **Technical Cause:**
+    1. Dynamic Rate Control (DRC) in `audio.rs` had an excessively wide clamp and gain (±5%), causing pitch wow during CDIC DMA bursts.
+    2. `Mp2Decoder` resampled each frame internally to 37.8 kHz, dropping 0.43 fractional samples per frame and causing a 38.28 Hz phase discontinuity.
+    3. Video and Audio DMA shared a single FIFO and demuxer, corrupting multi-sector PES audio packets when interleaved with video data.
+  - **Resolution:** Narrowed DRC clamp to ±0.5% (gain 0.005, clamp 0.995..=1.005); native 44.1 kHz stereo `f32` decoding fed directly into CDIC resampler; full separation of `fma_demux` from video `demux`. Confirmed by user: audio is fully accurate and free of distortion.
+
+- [ ] **Issue 2: Occasional video stuttering during FMV playback**
+  - **Symptom:** Occasional micro-stuttering and uneven motion during MPEG-1 playback.
+  - **Technical Cause:** Frame presentation was locked to `vsync_counter % 2 == 0`, causing cadence judder with fractional frame rates, and DMA collision between audio and video sectors caused occasional MPEG slice drops.
+  - **Resolution / Status:** Fractional frame accumulator (`frame_accum += fps / vsync_hz`) in `on_vsync` and dedicated FIFO channels for video and audio. User notes slight residual stuttering; PTS/SCR clock synchronization to be refined.
+
+- [ ] **Issue 3: Post-FMV Transition (10px fracture / Transitory black screen)**
+  - **Symptom:** The 10px upper screen fracture is eliminated, but at the conclusion of an FMV sequence a brief transitory black screen (varying from a quick flash to a few moments) occurs before the room background returns.
+  - **Technical Cause:** `get_scanline` outputs black and clears the framebuffer upon sequence end or STOP/DEC_OFF, whereas the game software takes several video fields to reload VRAM and restore Plane A/B rendering.
+  - **Status:** To be refined: maintaining display of the final frame until the first valid MCD212 Plane A/B display scanline.
+
+- [x] **Issue 4: Hard freeze / crash after upstairs ghost cutscene**
+  - **Symptom:** Turning left upstairs plays the ghost cutscene; clicking forward down the corridor afterward caused a hard freeze with OS-9 error *"avm_play: Still busy from last play $8000"*.
+  - **Technical Cause:**
+    1. On the disc, Video ends at sector 246910 with `00 00 01 B9` (Program End), whereas Audio continues for 45 more sectors up to sector 246955 (where the 2nd EOR and Audio `00 00 01 B9` reside).
+    2. Shared demux or premature audio underflow raised `FMA_IRQ_EOI` early, causing `vmpega.rom` to shut down the FMA audio decoder prematurely.
+    3. `cdapdriv` ran out of Channel 2 audio buffers and paused CDIC with command `0x2E`. Sector 246955 (2nd EOR) was never read, `avm_busy` remained 1, and the corridor FMV failed to start.
+  - **Resolution:** Dedicated FMA audio FIFO and demux; `FMA_IRQ_EOI` is raised strictly upon true audio stream Program End `00 00 01 B9`. Verified with automated regression test up to frame 5200: ghost scene finishes, corridor walk FMV loads and reads sectors LBA 161512+ without any freeze or busy error. Confirmed by user: freeze is brilliantly solved and player can advance through the corridor.
+
+---
+
+## 6. DVC Cartridge Not Detected (Kingdom, Ultra CD-i Soccer, Mutant Rampage)
+- [~] **Symptom:** When booting *Kingdom - The Far Reaches*, *Ultra CD-i Soccer*, *Mutant Rampage - Bodyslam* (and other MPEG titles), the game warned that the Digital Video Cartridge was not detected / missing.
+- **Technical Cause:** 
+  In `src/main.rs`, the `is_dvc_title` function used a hardcoded keyword whitelist based on filename substrings (`LAIR`, `GUEST`, `EDEN`, `MAD DOG`, `SPACE ACE`, `BRAIN DEAD`, `VCD`, `MPEG`, `DIGITAL VIDEO`). Any game title not matching this list prevented loading the DVC ROM (`vmpega.rom`) at boot, or explicitly unmounted the cartridge (`bus.dvc = Dvc::new()`) when opening a disc via the GUI menu. Consequently, the virtual console ran as a pure base CD-i player lacking the DVC hardware (MPEG decoder, 1MB Fast RAM at 0x00D00000, and FMA/FMV registers at 0x00E00000). The games, performing their hardware probe or querying OS-9 for the `vmpega` module, reported the cartridge missing.
+- **Resolution:**
+  1. Aligned with authentic Philips CD-i console hardware behavior: if `dvc/vmpega.rom` is present, the DVC cartridge is fitted and enabled by default for all games (mirroring a physical CD-i 220 player with the 22ER9956 cartridge permanently inserted in its rear expansion slot).
+  2. Removed the hardcoded `is_dvc_title` whitelist and preserved DVC state across disc insertions and swaps.
+  3. Added Win32 menu control under *Video* (*"Cartuccia Digital Video (DVC) [vmpega.rom]"*) with active checkmark status, plus `--no-dvc` command-line switch to force base CD-i mode when specifically needed.
+  4. Verified full boot and DVC detection: *Kingdom* (plays full-motion opening animation), *Ultra CD-i Soccer* (title screen and pitch rendering), *Mutant Rampage* (Start/Setup menu), *Chaos Control* (main menu), *Creature Shock* (Saturn spacecraft intro), *Inca* (language selection), *Escape from CyberCity* (main menu).
+  5. Verified backward compatibility: base non-DVC games (*Hotel Mario*, *Striker Pro*, *Rise of the Robots*, *Albero Azzurro*) continue to run properly with DVC installed.
+
+---
+
+## 7. Black Screen Regressions & MCD-212 ICA Interleaving (Creature Shock, CD-i Logo, Albero Azzurro, Mutant Rampage)
+- [x] **Symptom:** 
+  1. *Creature Shock:* Background cutscene audio heard but video invisible; initial menu shows cursor on a solid black screen.
+  2. *Console without disc:* Does not reach normal CD-i dashboard.
+  3. *L'Albero Azzurro:* Initial animated CD-i logo missing; launch intro video black with sound; room object selection screen pitch black.
+  4. *Mutant Rampage - Bodyslam:* CD-i animated logo missing; game menus not visible (black).
+- **Technical Cause:** 
+  1. In `src/mcd212.rs`, ICA instructions were executed by running all of Path 1 followed by all of Path 0 (`process_ica::<1>()` followed by `process_ica::<0>()`). At line 0, Path 1 set the matte transparency registers (`MC0 = 0x00900000`, `MC1 = 0x008002FF`) at step 139 to make planes A & B transparent and display the MPEG video backdrop. However, Path 0's reset instructions at steps 3..10 cleared all matte registers (`0xD0..=0xD7` to `0x00800000`), wiping out Path 1's configuration entirely.
+  2. Non-documented test bits in `mix_lines` were masking planes.
+- **Resolution:**
+  1. Implemented cycle/step interleaved execution of ICA Path 1 and Path 0 (`process_ica_step`), matching real Philips MCD-212 hardware architecture and MAME reference (`mcd212_mame.cpp`).
+  2. Restored clean line mixer.
+  3. Verified visual rendering: CD-i animated logo, dashboard, Creature Shock cockpit & cutscenes, Albero Azzurro VIDEORAI intro (39,000+ colors) and room screens, Mutant Rampage menus are fully visible.
+
+---
+
+## 8. Hot Disc Swap for Multi-CD Games (Creature Shock)
+- [x] **Symptom:** Selecting "Inserisci disco a caldo..." from the menu triggered a full console reset instead of continuing gameplay.
+- **Technical Cause:** 
+  In `src/main.rs`, `GuiAction::InsertDisc` was grouped with `GuiAction::OpenDisc`, executing `bus.reset_system()` and `cpu.reset()`. Furthermore, the Slave MCU did not emulate the tray open/close status transitions.
+- **Resolution:**
+  1. Implemented dedicated `bus.change_disc(&path)` preserving CPU SCC68070 registers, system RAM, and OS-9 / CD-RTOS state.
+  2. Added `notify_disc_swapped()` in `slave.rs` which transmits tray opened (`0x00`) followed by spinup and TOC ready (`0x41` -> `0x44`), allowing OS-9 to re-read volume descriptors without trapping.
+  3. Verified via automated test `test_disc_change`.
+
+---
+
+## 9. Video CD (White Book / CD-i Bridge) & Multi-Track / Multi-File CUE Support (Kilby Predicts, Gateway to the Mind)
+- [x] **Symptom:** 
+  1. Multi-track Video CDs (Track 1 ISO 9660 + CD-i filesystem, Track 2 multiplexed MPEG-1 `AVSEQ01.DAT`) and multi-file CUE sheets (separate `.bin` files per track, such as *Kilby Predicts*) failed to load or were treated as single-track standard CD-i images.
+  2. The OS-9 system driver `cdapdriv` recognized discs only as standard Red Book/single-track CD-i (`disc_type = 0x10`), failing to detect Track 2 and refusing to stream MPEG video.
+- **Technical Cause:** 
+  1. `CdRom` in `src/cdrom.rs` supported only single raw files (`CdSource::RawFile`) or CHDs with a static 1-track layout.
+  2. Subcode Q Table of Contents (TOC) packets in `src/cdic.rs` were hardcoded (`Pak A0`, `Pak A1`, `Pak A2`, `Pak 01`), always reporting a 1-track disc of type `0x10`.
+  3. Reading Subcode Q while streaming did not calculate the current track or relative track MSF coordinates.
+- **Resolution:**
+  1. **Folder Organization:** Dedicated subfolders created in `file utili/videocd/`: `Gateway to the Mind/` and `CD-i See It Hear It Feel It (USA) (Kilby Predicts) (Rev 1)/`.
+  2. **Multi-Track & Multi-File Architecture (`src/cdrom.rs`):**
+     - Added `CdTrack` struct tracking track number, control/mode, start LBA, sector length, sector size, file index, and file offset.
+     - Implemented `CdSource::RawFiles { files: Vec<File> }` with full CUE parser supporting both single-binary multi-track files (*Gateway to the Mind*) and multi-file track structures (*Kilby Predicts*).
+     - Automated disc type detection from PVD (LBA 16): detecting System ID `"CD-RTOS CD-BRIDGE"` sets `disc_type = 0x20` (White Book VCD), preserving `0x10` for standard CD-i discs.
+     - Track-routed sector lookup in `read_sector`: seeks accurately across files and intra-file track offsets.
+  3. **Dynamic Subcode Q TOC (`src/cdic.rs`):**
+     - Replaced static TOC packets with dynamic generation based on loaded disc tracks and disc type (`0xA0` with first track and true disc type, `0xA1` with last track number, `0xA2` with total lead-out MSF, plus individual track entries `0x01`..`0xNN`).
+     - Subcode Q queries during playback dynamically compute the active track number and track-relative MSF time.
+  4. **Verification & Results:**
+     - *Kilby Predicts:* Flawless, continuous MPEG-1 video/audio playback from Track 2 (`AVSEQ01.DAT`, LBA 81480 to 83644+) with 0 underflow, synchronized audio, and full-color "KILBY" intro on red velvet curtain (11,187 colors, verified across 850+ frames).
+     - *Gateway to the Mind:* Proper boot to `CDI/CDI_VCD.APP`, continuous MPEG-1 playback of the CD-i bumper `CDI_BUM.DAT` (LBA 862..1507) with audio/video and Plane B CD-i backdrop rendering.
 
 *(For an overview of all 15 games in `file utili/giochi/`, see [`COMPATIBILITY.md`](COMPATIBILITY.md))*
+

@@ -616,12 +616,20 @@ impl Mcd212 {
         }
     }
 
+    #[inline]
+    pub fn effective_active_scanlines(&self) -> usize {
+        if (self.dcr[0] & (DCR_CF_BIT | DCR_FD_BIT)) == DCR_CF_BIT {
+            240
+        } else {
+            self.video_mode.active_scanlines()
+        }
+    }
+
     pub fn tick_scanline(&mut self, line: usize) -> bool {
         self.scanline = line;
         let mut frame_completed = false;
-        let total_lines = self.video_mode.total_scanlines();
         let vblank_lines = self.video_mode.vblank_lines();
-        let active_lines = self.video_mode.active_scanlines();
+        let active_lines = self.effective_active_scanlines();
 
         if line == 0 {
             // End of frame / Start of VBLANK
@@ -656,7 +664,7 @@ impl Mcd212 {
             }
 
             frame_completed = true;
-        } else if line >= vblank_lines && line < total_lines {
+        } else if line >= vblank_lines && line < vblank_lines + active_lines {
             // Active display lines
             self.csrr[0] |= CSR1R_DA;
 
@@ -677,7 +685,7 @@ impl Mcd212 {
     pub fn render_line(&mut self, line: usize) {
         let total_lines = self.video_mode.total_scanlines();
         let vblank_lines = self.video_mode.vblank_lines();
-        let active_lines = self.video_mode.active_scanlines();
+        let active_lines = self.effective_active_scanlines();
 
         if line >= vblank_lines && line < total_lines {
             let active_line = line - vblank_lines;
@@ -783,7 +791,6 @@ impl Mcd212 {
 
     fn process_dca<const PATH: usize>(&mut self) {
         let start_addr = ((self.dca[PATH] & 0x0007_FFFC) / 2) as usize;
-        let next_line_dca = (start_addr + 32) * 2; // 32 words = 64 bytes
         let mut addr = start_addr;
         let mut count = 0;
         let max = 64;
@@ -1188,7 +1195,7 @@ impl Mcd212 {
         self.draw_cursor(self.scanline, &mut mixed_line);
 
 
-        let active_lines = self.video_mode.active_scanlines();
+        let active_lines = self.effective_active_scanlines();
         let is_interlaced = (self.dcr[0] & DCR_SM_BIT) != 0;
         let is_odd_field = (self.csrr[0] & CSR1R_PA) == 0;
 
