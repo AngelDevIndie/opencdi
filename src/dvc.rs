@@ -1105,7 +1105,7 @@ impl Dvc {
     pub fn on_vsync(&mut self) {
         self.process_stream();
 
-        // Check for FMA audio buffer drain / end of stream when audio is active
+        // Check for FMA audio buffer drain / underflow when audio is active
         if self.audio_enabled || self.audio_armed {
             let fma_drained = self.fma_stream_fifo.is_empty()
                 && self.fma_demux.audio.is_empty()
@@ -1113,11 +1113,11 @@ impl Dvc {
             if fma_drained {
                 self.fma_underflow_count = self.fma_underflow_count.saturating_add(1);
                 if self.fma_underflow_count == 10 {
-                    trace!(">>> [DVC FMA] AUDIO BUFFER DRAINED (raising FMA_IRQ_EOI | FMA_IRQ_UNF)");
-                    self.or_fma_word(FMA_ISR, FMA_IRQ_EOI | FMA_IRQ_UNF);
+                    trace!(">>> [DVC FMA] AUDIO BUFFER UNDERFLOW (raising FMA_IRQ_UNF)");
+                    self.or_fma_word(FMA_ISR, FMA_IRQ_UNF);
                     self.or_fma_word(0x02, 0x0008);
                 } else if self.fma_underflow_count > 10 && self.fma_underflow_count % 15 == 0 {
-                    self.or_fma_word(FMA_ISR, FMA_IRQ_EOI | FMA_IRQ_UNF);
+                    self.or_fma_word(FMA_ISR, FMA_IRQ_UNF);
                 }
             } else {
                 self.fma_underflow_count = 0;
@@ -1208,7 +1208,9 @@ impl Dvc {
                 if sequence_ended || (buffer_drained && self.underflow_count >= 15) {
                     trace!(">>> [DVC] END OF SEQUENCE / DRAIN after {} frames (seq_end={}, underflow={})", self.frames_decoded_count, sequence_ended, self.underflow_count);
                     self.or_fmv_word(FMV_ISR, FMV_IRQ_EOD | FMV_IRQ_ESI | FMV_IRQ_NDAT);
-                    self.or_fma_word(FMA_ISR, FMA_IRQ_EOI);
+                    if !self.fma_dma_seen {
+                        self.or_fma_word(FMA_ISR, FMA_IRQ_EOI);
+                    }
                     self.set_fmv_word(0x5C, 0x0000); // Return display status to idle
                     self.video_playing = false;
                     self.video_armed = false;
