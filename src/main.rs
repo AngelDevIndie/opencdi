@@ -305,8 +305,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut disc_launched = false;
     let mut shell_ready_count: u32 = 0;
 
-    let mut pad_x: i32 = 575;
-    let mut pad_y: i32 = 335;
+    let mut pad_x: i32 = if bus.cdrom.is_some() { 575 } else { 384 };
+    let mut pad_y: i32 = if bus.cdrom.is_some() { 335 } else { 280 };
+    let mut pad_x_f: f32 = pad_x as f32;
+    let mut pad_y_f: f32 = pad_y as f32;
     let mut pad_active = false;
     bus.emulate_wait_states = true; // Wait-states autentici hardware 15.5MHz, velocizzati dall'uncapped fast-boot
     let mut mouse_captured = true;
@@ -397,6 +399,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             shell_ready_count = 0;
                             pad_x = 575;
                             pad_y = 335;
+                            pad_x_f = 575.0;
+                            pad_y_f = 335.0;
                             pad_active = false;
                             mouse_captured = true;
                             bus.emulate_wait_states = true;
@@ -415,6 +419,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     disc_launched = false;
                     shell_ready_count = 0;
                     current_game_name = "Nessun disco (BIOS Standalone)".to_string();
+                    pad_x = 384;
+                    pad_y = 280;
+                    pad_x_f = 384.0;
+                    pad_y_f = 280.0;
                 }
                 GuiAction::Reset => {
                     info!("Riavvio dell'emulatore (Reset)");
@@ -423,8 +431,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     frame_count = 0;
                     disc_launched = false;
                     shell_ready_count = 0;
-                    pad_x = 575;
-                    pad_y = 335;
+                    pad_x = if bus.cdrom.is_some() { 575 } else { 384 };
+                    pad_y = if bus.cdrom.is_some() { 335 } else { 280 };
+                    pad_x_f = pad_x as f32;
+                    pad_y_f = pad_y as f32;
                     pad_active = false;
                     mouse_captured = true;
                     bus.emulate_wait_states = true;
@@ -505,8 +515,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     frame_count = 0;
                     disc_launched = false;
                     shell_ready_count = 0;
-                    pad_x = 575;
-                    pad_y = 335;
+                    pad_x = if bus.cdrom.is_some() { 575 } else { 384 };
+                    pad_y = if bus.cdrom.is_some() { 335 } else { 280 };
+                    pad_x_f = pad_x as f32;
+                    pad_y_f = pad_y as f32;
                     pad_active = false;
                 }
                 GuiAction::ShowHelp => {
@@ -554,6 +566,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 bus.emulate_wait_states = true;
                 pad_x = 384;
                 pad_y = 280;
+                pad_x_f = 384.0;
+                pad_y_f = 280.0;
                 bus.slave.update_mouse(384, 280, 0);
             }
         }
@@ -862,6 +876,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if bus.slave.device_mouse_updated {
             pad_x = bus.slave.device_mouse_x;
             pad_y = bus.slave.device_mouse_y;
+            pad_x_f = pad_x as f32;
+            pad_y_f = pad_y as f32;
             bus.slave.device_mouse_updated = false;
         }
 
@@ -870,14 +886,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         } else {
             match input_device_mode {
                 InputDeviceMode::Gamepad => {
-                    let pad_speed = 8;
+                    const PAD_SPEED: f32 = 2.5;
                     let mut moved = false;
                     if dir_x != 0 {
-                        pad_x = (pad_x + dir_x.clamp(-1, 1) * pad_speed).clamp(0, 767);
+                        pad_x_f = (pad_x_f + (dir_x.clamp(-1, 1) as f32) * PAD_SPEED).clamp(0.0, 767.0);
+                        pad_x = pad_x_f.round() as i32;
                         moved = true;
                     }
                     if dir_y != 0 {
-                        pad_y = (pad_y + dir_y.clamp(-1, 1) * pad_speed).clamp(0, 559);
+                        pad_y_f = (pad_y_f + (dir_y.clamp(-1, 1) as f32) * PAD_SPEED).clamp(0.0, 559.0);
+                        pad_y = pad_y_f.round() as i32;
                         moved = true;
                     }
                     if moved || key_btn != prev_key_btn {
@@ -888,6 +906,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 InputDeviceMode::Mouse => {
                     pad_x = mouse_x;
                     pad_y = mouse_y;
+                    pad_x_f = mouse_x as f32;
+                    pad_y_f = mouse_y as f32;
                     bus.slave.update_mouse(pad_x, pad_y, mouse_btn | key_btn);
                 }
             }
