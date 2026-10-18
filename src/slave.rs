@@ -172,9 +172,10 @@ impl SlaveHle {
                 if ch.in_buf[0] >= 0xC0 {
                     if ch.in_index == 1 {
                         ch.in_count = 3;
-                    } else if ch.in_index == ch.in_count {
                         self.device_mouse_x = (((ch.in_buf[1] & 0x70) as i32) << 3) | ((ch.in_buf[2] & 0x7F) as i32);
                         self.device_mouse_y = (((ch.in_buf[1] & 0x0F) as i32) << 6) | ((ch.in_buf[0] & 0x3F) as i32);
+                        self.input_mouse_x = -1;
+                        self.input_mouse_y = -1;
                         self.device_mouse_updated = true;
                         ch.in_index = 0;
                         ch.in_count = 0;

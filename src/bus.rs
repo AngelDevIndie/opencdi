@@ -851,16 +851,11 @@ impl AddressBus for CdiBus {
             }
             _ => {}
         }
-
         self.write_byte(address, (value >> 8) as u8);
         self.write_byte(address.wrapping_add(1), value as u8);
     }
 
     fn write_long(&mut self, address: u32, value: u32) {
-        let addr = address & 0x00FF_FFFF;
-        if (value & 0xF000_0000) == 0x5000_0000 && addr < 0x2000 {
-            println!("[ICA WRITE] addr=0x{:06X}, val=0x{:08X} at PC=0x{:08X}", addr, value, self.current_pc);
-        }
         self.write_word(address, (value >> 16) as u16);
         self.write_word(address.wrapping_add(2), value as u16);
     }
