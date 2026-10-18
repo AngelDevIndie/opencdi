@@ -437,6 +437,7 @@ pub struct Dvc {
     pub vsync_counter: usize,
     pub underflow_count: u32,
     pub fma_underflow_count: u32,
+    pub has_valid_frame: bool,
 }
 
 impl Dvc {
@@ -505,6 +506,7 @@ impl Dvc {
             vsync_counter: 0,
             underflow_count: 0,
             fma_underflow_count: 0,
+            has_valid_frame: false,
         };
         d.reset_regs();
         d
@@ -514,6 +516,7 @@ impl Dvc {
         self.ram1.fill(0);
         self.ram2.fill(0);
         self.framebuffer.fill(0xFF00_0000);
+        self.has_valid_frame = false;
         self.ram2_enabled = false;
         self.reg_write_count = 0;
         self.reg_read_count = 0;
@@ -557,7 +560,6 @@ impl Dvc {
         self.decoder_timecode = 0;
         self.display_frame_counter = 0;
         self.decoder_frame_counter = 0;
-        self.framebuffer.fill(0xFF00_0000);
     }
 
     pub fn reset_regs(&mut self) {
@@ -934,7 +936,6 @@ impl Dvc {
                     self.dvc_stream_fifo.clear();
                     self.demux.clear();
                     self.set_fmv_word(0x5C, 0x0000);
-                    self.framebuffer.fill(0xFF00_0000);
                 }
                 if value & 0x0100 != 0 { // RESET
                     self.video_playing = false;
@@ -953,7 +954,6 @@ impl Dvc {
                     self.frames_presented_count = 0;
                     self.frames_decoded_count = 0;
                     self.frame_accum = 0.0;
-                    self.framebuffer.fill(0xFF00_0000);
                 }
                 if value & 0x8000 != 0 { // DMA request Video
                     self.dma_requested = true;
@@ -1167,6 +1167,7 @@ impl Dvc {
                     decoder.frame(frame_idx).write_rgb_scaled(&mut *self.framebuffer, target_w, target_h);
                     self.video_width = target_w;
                     self.video_height = target_h;
+                    self.has_valid_frame = true;
                     got_frame = true;
                 }
             }
@@ -1222,7 +1223,8 @@ impl Dvc {
                     self.frame_accum = 0.0;
                     self.dvc_stream_fifo.clear();
                     self.demux.clear();
-                    self.framebuffer.fill(0xFF00_0000);
+                    // NOTE: Real DVC hardware keeps the last decoded picture in DRAM.
+                    // MCD-212 plane transparency / ICM controls when it is visible.
                 } else {
                     self.or_fmv_word(FMV_ISR, FMV_IRQ_NDAT);
                 }
@@ -1268,14 +1270,16 @@ impl Dvc {
 
     pub fn get_scanline(&self, active_line: usize, out: &mut [u32; 768]) {
         out.fill(0xFF00_0000);
-        let is_active = (self.video_playing || self.decoder_enabled || self.get_fmv_word(0x5C) != 0)
-            && (self.frames_decoded_count > 0 || self.frames_presented_count > 0);
-        if !is_active {
+        if !self.has_valid_frame {
             return;
         }
 
         let disp_h = (self.get_fmv_word(0x04) as usize).min(288);
-        let disp_h = if disp_h == 0 { 240 } else { disp_h };
+        let disp_h = if disp_h == 0 {
+            if self.video_height > 0 { self.video_height } else { 240 }
+        } else {
+            disp_h
+        };
         let reg_y = self.get_fmv_word(0x6C) as usize;
         let y_start = if reg_y > 0 && reg_y != 26 && reg_y <= 240 {
             reg_y
@@ -1286,7 +1290,11 @@ impl Dvc {
         if active_line >= y_start && active_line < y_end {
             let dy = active_line - y_start;
             let disp_w = (self.get_fmv_word(0x02) as usize).min(352);
-            let disp_w = if disp_w == 0 { 352 } else { disp_w };
+            let disp_w = if disp_w == 0 {
+                if self.video_width > 0 { self.video_width } else { 352 }
+            } else {
+                disp_w
+            };
             let pitch = if self.video_width > 0 { self.video_width } else { disp_w };
             let x_start = (768usize.saturating_sub(disp_w * 2)) / 2;
             for dx in 0..disp_w {

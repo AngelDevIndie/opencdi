@@ -170,6 +170,7 @@ pub struct Mcd212 {
     pub vblank_irq: bool,
     pub video_mode: VideoMode,
     pub external_video_line: [u32; 768],
+    pub trace_dca: bool,
 }
 
 impl Mcd212 {
@@ -266,6 +267,7 @@ impl Mcd212 {
             vblank_irq: false,
             video_mode: VideoMode::Pal,
             external_video_line: [0xFF00_0000; 768],
+            trace_dca: false,
         };
         mcd.init_default_palette();
         mcd
@@ -618,11 +620,7 @@ impl Mcd212 {
 
     #[inline]
     pub fn effective_active_scanlines(&self) -> usize {
-        if self.video_mode == VideoMode::Ntsc
-            || (self.dcr[0] & DCR_FD_BIT) != 0
-            || (self.dcr[0] & DCR_CF_BIT) != 0
-            || (self.csrw[0] & CSR1W_ST_BIT) != 0
-        {
+        if self.video_mode == VideoMode::Ntsc || (self.dcr[0] & DCR_FD_BIT) != 0 {
             240
         } else {
             280

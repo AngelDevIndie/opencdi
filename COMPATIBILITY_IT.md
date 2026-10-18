@@ -59,6 +59,14 @@ Questo documento traccia lo stato di compatibilità e i problemi riscontrati dei
 - **Risoluzioni applicate:**
   1. **Schermata nera con elementi isolati a fine video:** Risolto. Rimosso errato controllo `DCR_DE_BIT` su Path 1 in `mcd212.rs`, ripristinando la visualizzazione corretta di sfondo 3D (Plane B) e hotspot interattivi (Plane A).
   2. **Freeze post-video fantasma al primo piano a sinistra:** Risolto. Disaccoppiamento completo dei flussi video e audio FMA/FMV, gestione corretta dell'End-of-Record e rimozione dell'underflow prematuro su FMA.
+  3. **Eliminazione del flash nero a fine filmato:** Risolto. L'hardware autentico DVC mantiene l'ultimo fotogramma decodificato nella propria DRAM finché un nuovo flusso o i piani MCD-212 non lo sovrascrivono. Sostituito lo svuotamento a nero prematuro con la persistenza in scansione continua (`has_valid_frame`), garantendo continuità visiva durante il caricamento da disco del salone interattivo.
+
+### 5. Ultra CD-i Soccer (Europe)
+- **DVC:** Richiesto.
+- **Stato:** Avviabile, schermata del titolo e campo di gioco completamente funzionanti.
+- **Risoluzioni applicate:**
+  - Corretta la funzione `effective_active_scanlines()` in `mcd212.rs` secondo le specifiche autentiche Motorola/Philips MCD-212 (Tabella 5-6). Rimossi i controlli scorretti su `DCR_CF_BIT` (flag cursore) e `CSR1W_ST_BIT` che limitavano le linee attive PAL a 240 anziché 280. Questo consente alla scanline 289 di eseguire l'istruzione DCA `INTERRUPT` (`0x60000000`) sul Path 1, generando l'IRQ di Livello 5 necessario al driver video di OS-9 e risolvendo il loop infinito a `0x25E694`.
+
 
 ### 5. Striker Pro (USA)
 - **DVC:** Non necessario.

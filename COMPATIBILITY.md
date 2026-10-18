@@ -59,6 +59,14 @@ This document tracks the compatibility status, test results, and verified fixes 
 - **Applied Fixes:**
   1. **Black screen post-video:** Resolved. Removed incorrect `DCR_DE_BIT` gate on Path 1 in `mcd212.rs`, restoring 3D room backdrops (Plane B) and interactive hotspots (Plane A).
   2. **Upstairs hallway post-ghost cutscene freeze:** Resolved. Fully decoupled FMV video and FMA audio streams, implemented proper ISO `00 00 01 B9` program end routing, and prevented premature `FMA_IRQ_EOI` assertions during momentary audio buffer drain.
+  3. **Cutscene-end black flash / flicker elimination:** Resolved. Authentic Philips CD-i / DVC hardware retains the last decoded MPEG picture in DVC DRAM until overwritten. Replaced premature framebuffer clearing on stream drain/stop with persistent frame scanout (`has_valid_frame`), providing smooth visual continuity during disc seeks into the interactive mansion.
+
+### 5. Ultra CD-i Soccer (Europe)
+- **DVC:** Required.
+- **Status:** Bootable and fully functional title screen / pitch.
+- **Applied Fixes:**
+  - Corrected `effective_active_scanlines()` in `mcd212.rs` to authentic Motorola/Philips MCD-212 hardware specifications (Table 5-6). Removed erroneous checks on `DCR_CF_BIT` (Cursor Flag) and `CSR1W_ST_BIT` that clamped PAL active scanlines to 240 instead of 280. This allows scanline 289 to execute Path 1 DCA `INTERRUPT` (`0x60000000`), triggering the Level 5 IRQ needed by OS-9's video callback and resolving the infinite spin loop at `0x25E694`.
+
 
 ### 5. Striker Pro (USA)
 - **DVC:** Not required.
