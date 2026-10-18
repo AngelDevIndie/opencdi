@@ -11,6 +11,11 @@ pub struct SlaveChannel {
     pub in_buf: [u8; 18],
     pub in_count: usize,
     pub in_index: usize,
+
+    // Pacchetto CH0 in attesa di promozione (arrivato durante una lettura in corso)
+    pub pending_buf: [u8; 8],
+    pub pending_count: usize,
+    pub pending_cmd: u8,
 }
 
 impl Default for SlaveChannel {
@@ -23,6 +28,9 @@ impl Default for SlaveChannel {
             in_buf: [0; 18],
             in_count: 0,
             in_index: 0,
+            pending_buf: [0; 8],
+            pending_count: 0,
+            pending_cmd: 0,
         }
     }
 }
@@ -145,6 +153,17 @@ impl SlaveHle {
             if ch.out_count == 0 {
                 ch.out_index = 0;
                 ch.out_cmd = 0;
+                // Fine lettura CH0: promuovi il pacchetto in attesa (se presente)
+                if ch_idx == 0 && ch.pending_count > 0 {
+                    ch.out_index = 0;
+                    ch.out_count = ch.pending_count;
+                    ch.out_cmd = ch.pending_cmd;
+                    ch.out_buf[..ch.pending_count].copy_from_slice(&ch.pending_buf[..ch.pending_count]);
+                    ch.pending_count = 0;
+                    ch.pending_cmd = 0;
+                    ch.pending_buf = [0; 8];
+                    self.irq_pending = true;
+                }
             }
 
             return (val as u16) | ((val as u16) << 8);
@@ -172,11 +191,20 @@ impl SlaveHle {
                 if ch.in_buf[0] >= 0xC0 {
                     if ch.in_index == 1 {
                         ch.in_count = 3;
+                    } else if ch.in_count == 3 && ch.in_index == ch.in_count {
+                        // Pacchetto completo (3 byte): decodifica ora, come MAME set_mouse_position()
                         self.device_mouse_x = (((ch.in_buf[1] & 0x70) as i32) << 3) | ((ch.in_buf[2] & 0x7F) as i32);
                         self.device_mouse_y = (((ch.in_buf[1] & 0x0F) as i32) << 6) | ((ch.in_buf[0] & 0x3F) as i32);
                         self.input_mouse_x = -1;
                         self.input_mouse_y = -1;
                         self.device_mouse_updated = true;
+                        if self.debug_log {
+                            println!(
+                                "[SLAVE CH0 WARP] bytes=0x{:02X} 0x{:02X} 0x{:02X} -> device ({}, {})",
+                                ch.in_buf[0], ch.in_buf[1], ch.in_buf[2], self.device_mouse_x, self.device_mouse_y
+                            );
+                        }
+                        ch.in_buf = [0; 18];
                         ch.in_index = 0;
                         ch.in_count = 0;
                     }
@@ -316,6 +344,15 @@ impl SlaveHle {
 
     pub fn prepare_readback(&mut self, ch_idx: usize, data: &[u8], cmd: u8, assert_irq: bool) {
         let ch = &mut self.channels[ch_idx];
+        // CH0: pacchetto arrivato mentre il precedente è in lettura -> stage (last-wins), nessuna promozione ora
+        if ch_idx == 0 && ch.out_count > 0 && ch.out_index > 0 {
+            ch.pending_count = data.len().min(ch.pending_buf.len());
+            ch.pending_cmd = cmd;
+            for (i, &b) in data.iter().take(ch.pending_count).enumerate() {
+                ch.pending_buf[i] = b;
+            }
+            return;
+        }
         ch.out_index = 0;
         ch.out_count = data.len().min(ch.out_buf.len());
         ch.out_cmd = cmd;

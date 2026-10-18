@@ -184,6 +184,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("=== OpenCDi - Philips CD-i Emulator ===");
 
     let mut bus = CdiBus::new();
+    bus.slave.debug_log = std::env::args().any(|a| a == "--slave-debug");
+    if bus.slave.debug_log {
+        info!("Debug Slave XBUS abilitato (--slave-debug): log byte CH0 (mouse)");
+    }
 
     // 1. Load BIOS ROM
     let bios_path = find_file("bios/cdi220b.rom").expect("BIOS cdi220b.rom non trovato");
@@ -213,7 +217,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 3. Optional Game Disc (from command line argument, or None for standalone BIOS)
     let mut current_game_name = "Nessun disco (BIOS Standalone)".to_string();
     let initial_disc = std::env::args().nth(1).and_then(|a| {
-        if a == "--bios" || a == "--standalone" || a == "--no-dvc" || a == "--nodvc" {
+        if a == "--bios" || a == "--standalone" || a == "--no-dvc" || a == "--nodvc" || a == "--slave-debug" {
             None
         } else {
             find_file(&a).or_else(|| {
