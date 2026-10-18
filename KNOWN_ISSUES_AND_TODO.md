@@ -176,5 +176,31 @@ Legend: `[ ]` open · `[~]` fix applied in code, **pending in-game confirmation*
      - *Kilby Predicts:* Flawless, continuous MPEG-1 video/audio playback from Track 2 (`AVSEQ01.DAT`, LBA 81480 to 83644+) with 0 underflow, synchronized audio, and full-color "KILBY" intro on red velvet curtain (11,187 colors, verified across 850+ frames).
      - *Gateway to the Mind:* Proper boot to `CDI/CDI_VCD.APP`, continuous MPEG-1 playback of the CD-i bumper `CDI_BUM.DAT` (LBA 862..1507) with audio/video and Plane B CD-i backdrop rendering.
 
+---
+
+## 10. Gamepad Dashboard Movement & DVC Audio Regression Fix (The 7th Guest) - Release v0.1.6
+- [x] **Symptom 1 (Gamepad in Dashboard):** When navigating the standalone disc-less dashboard or BIOS with the D-pad, the cursor snapped abruptly across 8 fixed positions without smooth progression and snapped back to center on release.
+  - **Technical Cause:**
+    1. In `src/main.rs`, integer coordinate increments at `pad_speed = 8` caused aggressive displacement jumps.
+    2. Missing continuous sub-pixel float accumulator caused sampling discontinuities.
+    3. Standalone boot and reset coordinates lacked proper centering to `(384, 280)`.
+  - **Resolution:**
+    1. Established authentic fixed speed `PAD_SPEED = 2.5` pixels per frame.
+    2. Implemented continuous sub-pixel accumulators (`pad_x_f`, `pad_y_f`) with zero-drift position hold on D-pad release.
+    3. Center-anchored resting position at `(384, 280)` on standalone boot, Reset, and disc Eject.
+    4. Verified with `test_dashboard_mouse`: smooth, continuous linear progression with 0 warps or rebound artifacts.
+
+- [x] **Symptom 2 (Freeze in The 7th Guest post-ghost cutscene):**
+  - **Technical Cause:**
+    1. In `src/dvc.rs:1115-1121`, `FMA_IRQ_EOI | FMA_IRQ_UNF` was triggered after just 10 vsyncs (200 ms) of temporary audio FIFO drain.
+    2. Video sequence completion was unconditionally triggering `FMA_IRQ_EOI` without verifying independent audio DMA channel routing (`self.fma_dma_seen`).
+    3. In The 7th Guest ghost video, audio continues for 45 sectors past the video stream end to sector 246955 (second EOR). Premature FMA shutdown halted CDIC reads, leaving `avm_busy` (`0xD02C8A`) at 1, causing hallway navigation to fail with *"avm_play: Still busy from last play $8000"*.
+  - **Resolution:**
+    1. Temporary audio drain (`fma_drained`) strictly asserts authentic hardware underflow `FMA_IRQ_UNF`, NEVER `FMA_IRQ_EOI`. `FMA_IRQ_EOI` is exclusively reserved for ISO code `00 00 01 B9` encountered by the audio demuxer or explicit software stop.
+    2. Video sequence completion only asserts `FMA_IRQ_EOI` if audio is not using dedicated FMA DMA (`if !self.fma_dma_seen`).
+
+---
+
 *(For an overview of all 15 games in `file utili/giochi/`, see [`COMPATIBILITY.md`](COMPATIBILITY.md))*
+
 

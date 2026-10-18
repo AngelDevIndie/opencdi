@@ -183,5 +183,31 @@ Legenda: `[ ]` aperto · `[~]` fix applicata nel codice, **da confermare giocand
      - *CD-i See It Hear It Feel It (Kilby Predicts):* Decodifica continua e perfetta di 850+ frame MPEG-1 da Traccia 2 (`AVSEQ01.DAT`, da LBA 81480 a 83644) con 0 underflow, audio sincronizzato, logo KILBY su sipario rosso a 11.187 colori (`vcd_kilby_frame_2500.bmp`).
      - *Gateway to the Mind:* Avvio regolare di `CDI_VCD.APP`, riproduzione bumper CD-i MPEG-1 `CDI_BUM.DAT` (LBA 862..1507) con audio/video fluido (`vcd_gateway_frame_1200.bmp`).
 
+---
+
+## 10. Movimento Gamepad Dashboard & Risoluzione Regressione Audio DVC (The 7th Guest) - Release v0.1.6
+- [x] **Sintomo 1 (Gamepad nella Dashboard):** Muovendo il D-pad nella dashboard senza disco o nel BIOS, il cursore saltava bruscamente su 8 posizioni prefissate a scatti senza progressione continua e tornava al centro al rilascio.
+  - **Causa Tecnica:** 
+    1. In `src/main.rs`, la velocità `pad_speed` a 8 pixel interi con arrotondamenti immediati generava movimenti violenti.
+    2. Le coordinate `pad_x` e `pad_y` mancavano di un accumulatore sub-pixel `f32` continuo, causando salti di campionamento.
+    3. Mancava il posizionamento iniziale centrato a `(384, 280)` all'avvio standalone e su Reset.
+  - **Risoluzione:**
+    1. Introdotta velocità lineare stabile `PAD_SPEED = 2.5` pixel per frame.
+    2. Implementati accumulatori sub-pixel continui `pad_x_f` e `pad_y_f` con mantenimento saldo della posizione corrente al rilascio del D-pad (zero drift, zero snap).
+    3. Impostate le coordinate di riposo/avvio al centro esatto `(384, 280)` sia all'avvio del BIOS sia al Reset/Eject della dashboard.
+    4. Convalidato con `test_dashboard_mouse`: movimento progressivo fluido e assenza totale di warp o rimbalzi.
+
+- [x] **Sintomo 2 (Freeze The 7th Guest dopo la cutscene del fantasma):**
+  - **Causa Tecnica:**
+    1. Nel commit `f4fa9a5`, in `src/dvc.rs:1115-1121`, era stata aggiunta una logica che sollevava `FMA_IRQ_EOI | FMA_IRQ_UNF` dopo soli 10 vsync (200 ms) di svuotamento temporaneo del buffer audio FIFO.
+    2. Inoltre, al termine della sequenza video veniva sollevato incondizionatamente `FMA_IRQ_EOI` senza verificare se l'audio viaggiasse su canale DMA separato (`self.fma_dma_seen`).
+    3. Poiché nel video del fantasma l'audio prosegue per 45 settori oltre il termine del video fino al secondo marcatore EOR al settore 246955, l'interruzione prematura di FMA causava il blocco del driver `cdapdriv` e il congelamento con errore OS-9 *"avm_play: Still busy from last play $8000"*.
+  - **Risoluzione:**
+    1. Svuotamento temporaneo del buffer audio (`fma_drained`): sollevato unicamente l'interrupt di underflow autentico `FMA_IRQ_UNF`, MAI `FMA_IRQ_EOI`. L'interrupt `FMA_IRQ_EOI` viene asserito solo al codice ISO `00 00 01 B9` nell'audio demuxer o su chiusura esplicita da parte del software.
+    2. Chiusura sequenza video: `FMA_IRQ_EOI` viene sollevato solo se non c'è canale DMA separato per l'audio (`if !self.fma_dma_seen`).
+
+---
+
 *(Per la panoramica e lo stato di tutti i 15 giochi presenti nella cartella `file utili/giochi/`, consultare il file `COMPATIBILITY.md`)*
+
 
