@@ -61,16 +61,69 @@ cargo build --release
 
 L'eseguibile ottimizzato verrà generato in `target/release/opencdi.exe`.
 
-### File BIOS e ROM
-Posizionare i seguenti file BIOS nella cartella `bios/`, `file utili/bios/` o nella cartella dell'eseguibile:
-- `cdi220b.rom` (BIOS CD-i 220)
-- `vmpega.rom` (ROM del Digital Video Cartridge per i titoli con filmati MPEG)
+## Setup del BIOS e File di Sistema Necessari
 
-### Avvio
-```bash
-cargo run --release -- "percorso/al/gioco.chd"
+OpenCDi è un emulatore low-level che esegue il firmware originale Philips CD-i per inizializzare il kernel del sistema operativo OS-9, i controller di bus e i driver di periferica. Per ragioni di copyright, **queste ROM proprietarie non sono incluse nell'emulatore e devono essere fornite dall'utente.**
+
+### 1. Tabella di Specifiche delle ROM di Sistema
+
+| Componente | Nome File Consigliato | Nomi Alternativi Supportati | Dimensione Esatta (Byte) | Checksum MD5 | Checksum SHA-1 | Stato |
+|---|---|---|---|---|---|---|
+| **BIOS di Sistema** | `cdi220b.rom` | `cdi220.rom`, `cdi200.rom`, `cdi490a.rom` | 524.288 (512 KB) | `ac0d468be366779c9df633be98da250a` | `53360a1f21ddac952e95306ced64186a3fc0b93e` | **Obbligatorio** |
+| **Digital Video Cartridge (DVC)** | `vmpega.rom` | `impega.rom` | 262.144 (256 KB) | `53ba3bf7443187a657baa272d01d3771` | `be407fbc102f1731a0862554855e963e5a47c17b` | **Richiesto per FMV / VCD** |
+| **Timekeeper NVRAM** | `nvram_mk48t08.bin` | `nvram.bin` | 8.192 (8 KB) | `45ed531aec0941ddf57af8f00c71bed1` | `601d780e1544985352535143705ffcc670d282d1` | *Opzionale (Auto-generato)* |
+
+#### Ruoli Hardware e Dettagli:
+- **BIOS di Sistema (`cdi220b.rom`):**
+  - **Cos'è:** La ROM di sistema europea PAL Mono-board del lettore Philips CD-i 220/205/210.
+  - **Perché è necessario:** Contiene il kernel del sistema operativo real-time OS-9 68070, i driver per il controller video MCD-212, il controller disco CDIC, il microcontrollore Slave 68HC05, i font di sistema e la dashboard/shell del lettore Philips.
+  - **Comportamento se assente:** OpenCDi mostrerà una finestra di dialogo esplicativa che indica il file mancante e i checksum richiesti, chiudendosi poi in modo pulito.
+- **ROM Digital Video Cartridge (`vmpega.rom`):**
+  - **Cos'è:** Il firmware della cartuccia Philips 22ER9956 (chip decoder CL450 MPEG-1).
+  - **Perché è necessario:** Abilita la decodifica hardware MPEG-1 video e audio per i giochi con sequenze Full Motion Video (FMV) e i Video CD (VCD).
+  - **Giochi che richiedono la DVC:** *The 7th Guest*, *Dragon's Lair*, *Space Ace*, *Lost Eden*, *Burn:Cycle*, *Rise of the Robots*, *Mad Dog McCree*, *Mutant Rampage: Bodyslam*, *Ultra CD-i Soccer*, e tutti i film su Video CD.
+  - **Giochi che funzionano senza DVC (modalità CD-i Base):** *Hotel Mario*, *Striker Pro*, *Lemmings*, *Tetris*, *Zelda: The Wand of Gamelon*, *Link: The Faces of Evil*, *Asterix*, *Defender of the Crown*, ecc.
+- **NVRAM Timekeeper (`nvram_mk48t08.bin`):**
+  - **Cos'è:** 8 KB di memoria SRAM non volatile con batteria tampone (MK48T08) che memorizza la configurazione della console, l'orologio/calendario, i record e i salvataggi dei giochi.
+  - **Creazione automatica:** Se non presente, OpenCDi crea automaticamente un file NVRAM pulito e salva i progressi di gioco su disco.
+
+### 2. Struttura Cartelle Consigliata
+
+OpenCDi cerca le ROM di sistema in diverse posizioni standard. È possibile posizionare i file in una sottocartella pulita `bios/` o direttamente accanto a `opencdi.exe`:
+
 ```
-Oppure trascinare direttamente l'immagine `.chd` sull'eseguibile `opencdi.exe`.
+opencdi/
+├── opencdi.exe
+├── opencdi_controls.ini       (Generato automaticamente al primo avvio)
+├── bios/
+│   ├── cdi220b.rom            <-- Posiziona qui il BIOS di sistema (Obbligatorio)
+│   ├── vmpega.rom             <-- Posiziona qui la ROM DVC (Richiesto per FMV)
+│   └── nvram_mk48t08.bin      <-- Salvataggi e impostazioni (Opzionale / Auto-creato)
+└── games/
+    ├── Hotel Mario (Europe).chd
+    └── The 7th Guest (USA).chd
+```
+
+*Nota: Il posizionamento di `cdi220b.rom` e `vmpega.rom` direttamente nella cartella principale accanto a `opencdi.exe`, oppure all'interno di `dvc/` per `vmpega.rom`, è pienamente supportato.*
+
+### 3. Formati Disco Supportati
+
+- **CHD (`.chd`):** Fortemente consigliato. OpenCDi decodifica nativamente le immagini compresse MAME CHD con settori Mode 2 Form 1/2 e tracce audio CD-DA senza alcun ritardo di decompressione.
+- **ISO (`.iso`):** Immagini dati standard a settori da 2048 byte.
+- **BIN/CUE (`.bin`, `.cue`):** Immagini raw con settori da 2352 byte e tracce audio Redbook.
+
+### 4. Come Avviare un Gioco
+```bash
+# Avvia un'immagine disco di un gioco
+opencdi.exe "percorso/al/gioco.chd"
+
+# Avvia la console nella Shell del BIOS (nessun disco)
+opencdi.exe --bios
+
+# Forza la modalità CD-i Base senza cartuccia DVC
+opencdi.exe --no-dvc "percorso/al/gioco.chd"
+```
+Oppure trascina direttamente qualsiasi file `.chd` sopra l'eseguibile `opencdi.exe`.
 
 ---
 

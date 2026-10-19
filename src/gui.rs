@@ -300,10 +300,10 @@ impl KeyBindings {
             InputProfile::Custom => "Custom",
         };
         let content = format!(
-            "# Configurazione Comandi OpenCDi\n\
-             # Profilo: Standard | WASD | Numpad | Custom\n\
+            "# OpenCDi Controls Configuration\n\
+             # Profile: Standard | WASD | Numpad | Custom\n\
              profile={}\n\n\
-             # Tasti personalizzati (attivi con profile=Custom o come override):\n\
+             # Custom key bindings (active with profile=Custom or as overrides):\n\
              up={}\n\
              down={}\n\
              left={}\n\
@@ -651,62 +651,62 @@ pub fn attach_gui_menu(
         }
         MENU_HANDLE = main_menu;
 
-        // 1. Menu File
+        // 1. File Menu
         let file_menu = CreatePopupMenu();
-        AppendMenuW(file_menu, MF_STRING, ID_FILE_INSERT, to_wide("Inserisci Disco nel Lettore (a caldo)...\tCtrl+I").as_ptr());
-        AppendMenuW(file_menu, MF_STRING, ID_FILE_OPEN, to_wide("Apri Disco e Riavvia Console...\tCtrl+O").as_ptr());
-        AppendMenuW(file_menu, MF_STRING, ID_FILE_EJECT, to_wide("Espelli Disco (Eject)").as_ptr());
+        AppendMenuW(file_menu, MF_STRING, ID_FILE_INSERT, to_wide("Insert Disc (Hot-swap)...\tCtrl+I").as_ptr());
+        AppendMenuW(file_menu, MF_STRING, ID_FILE_OPEN, to_wide("Open Disc & Restart Console...\tCtrl+O").as_ptr());
+        AppendMenuW(file_menu, MF_STRING, ID_FILE_EJECT, to_wide("Eject Disc").as_ptr());
         AppendMenuW(file_menu, MF_SEPARATOR, 0, std::ptr::null());
-        AppendMenuW(file_menu, MF_STRING, ID_FILE_RESET, to_wide("Riavvia Console (Reset)\tF5").as_ptr());
+        AppendMenuW(file_menu, MF_STRING, ID_FILE_RESET, to_wide("Restart Console (Reset)\tF5").as_ptr());
         AppendMenuW(file_menu, MF_SEPARATOR, 0, std::ptr::null());
-        AppendMenuW(file_menu, MF_STRING, ID_FILE_EXIT, to_wide("Esci\tAlt+F4").as_ptr());
+        AppendMenuW(file_menu, MF_STRING, ID_FILE_EXIT, to_wide("Exit\tAlt+F4").as_ptr());
         AppendMenuW(main_menu, MF_POPUP, file_menu as usize, to_wide("File").as_ptr());
 
-        // 2. Menu Comandi
+        // 2. Controls Menu
         let controls_menu = CreatePopupMenu();
 
         let device_menu = CreatePopupMenu();
-        AppendMenuW(device_menu, MF_STRING, ID_INPUT_DEVICE_GAMEPAD, to_wide("Controller CD-i (Gamepad USB / Tastiera)").as_ptr());
-        AppendMenuW(device_menu, MF_STRING, ID_INPUT_DEVICE_MOUSE, to_wide("Mouse Philips CD-i (Cursore Host)").as_ptr());
-        AppendMenuW(controls_menu, MF_POPUP, device_menu as usize, to_wide("Dispositivo di Controllo").as_ptr());
+        AppendMenuW(device_menu, MF_STRING, ID_INPUT_DEVICE_GAMEPAD, to_wide("CD-i Gamepad (USB Controller / Keyboard)").as_ptr());
+        AppendMenuW(device_menu, MF_STRING, ID_INPUT_DEVICE_MOUSE, to_wide("Philips CD-i Mouse (Host Cursor)").as_ptr());
+        AppendMenuW(controls_menu, MF_POPUP, device_menu as usize, to_wide("Input Device").as_ptr());
         AppendMenuW(controls_menu, MF_SEPARATOR, 0, std::ptr::null());
 
-        AppendMenuW(controls_menu, MF_STRING, ID_PROFILE_STANDARD, to_wide("Profilo Tasti: Standard (Frecce + Z / X)").as_ptr());
-        AppendMenuW(controls_menu, MF_STRING, ID_PROFILE_WASD, to_wide("Profilo Tasti: WASD + J / K (Stile PC)").as_ptr());
-        AppendMenuW(controls_menu, MF_STRING, ID_PROFILE_NUMPAD, to_wide("Profilo Tasti: Tastierino Numerico (Numpad)").as_ptr());
-        AppendMenuW(controls_menu, MF_STRING, ID_PROFILE_CUSTOM, to_wide("Profilo Tasti: Personalizzato (opencdi_controls.ini)").as_ptr());
+        AppendMenuW(controls_menu, MF_STRING, ID_PROFILE_STANDARD, to_wide("Key Profile: Standard (Arrow Keys + Z / X)").as_ptr());
+        AppendMenuW(controls_menu, MF_STRING, ID_PROFILE_WASD, to_wide("Key Profile: WASD + J / K (PC Style)").as_ptr());
+        AppendMenuW(controls_menu, MF_STRING, ID_PROFILE_NUMPAD, to_wide("Key Profile: Numpad (8 4 6 2 + 1 / 0)").as_ptr());
+        AppendMenuW(controls_menu, MF_STRING, ID_PROFILE_CUSTOM, to_wide("Key Profile: Custom (opencdi_controls.ini)").as_ptr());
         AppendMenuW(controls_menu, MF_SEPARATOR, 0, std::ptr::null());
-        AppendMenuW(controls_menu, MF_STRING, ID_CONTROLS_EDIT_INI, to_wide("Modifica Comandi in Notepad...").as_ptr());
-        AppendMenuW(controls_menu, MF_STRING, ID_CONTROLS_RELOAD_INI, to_wide("Ricarica Comandi da File INI").as_ptr());
+        AppendMenuW(controls_menu, MF_STRING, ID_CONTROLS_EDIT_INI, to_wide("Edit Controls in Notepad...").as_ptr());
+        AppendMenuW(controls_menu, MF_STRING, ID_CONTROLS_RELOAD_INI, to_wide("Reload Controls from INI").as_ptr());
         AppendMenuW(controls_menu, MF_SEPARATOR, 0, std::ptr::null());
-        AppendMenuW(controls_menu, MF_STRING, ID_CONTROLS_RELEASE_MOUSE, to_wide("Libera / Cattura Mouse\tTasto Centrale").as_ptr());
-        AppendMenuW(controls_menu, MF_STRING, ID_CONTROLS_INFO, to_wide("Visualizza Configurazione Tasti...").as_ptr());
-        AppendMenuW(main_menu, MF_POPUP, controls_menu as usize, to_wide("Comandi").as_ptr());
+        AppendMenuW(controls_menu, MF_STRING, ID_CONTROLS_RELEASE_MOUSE, to_wide("Release / Capture Mouse\tMiddle Click").as_ptr());
+        AppendMenuW(controls_menu, MF_STRING, ID_CONTROLS_INFO, to_wide("View Controls Configuration...").as_ptr());
+        AppendMenuW(main_menu, MF_POPUP, controls_menu as usize, to_wide("Controls").as_ptr());
 
-        // 3. Menu Audio
+        // 3. Audio Menu
         let audio_menu = CreatePopupMenu();
-        AppendMenuW(audio_menu, MF_STRING, ID_AUDIO_MUTE, to_wide("Muto / Riattiva Audio\tM").as_ptr());
-        AppendMenuW(audio_menu, MF_STRING, ID_AUDIO_VOL_UP, to_wide("Volume Su (+)\t+").as_ptr());
-        AppendMenuW(audio_menu, MF_STRING, ID_AUDIO_VOL_DOWN, to_wide("Volume Giù (-)\t-").as_ptr());
+        AppendMenuW(audio_menu, MF_STRING, ID_AUDIO_MUTE, to_wide("Mute / Unmute Audio\tM").as_ptr());
+        AppendMenuW(audio_menu, MF_STRING, ID_AUDIO_VOL_UP, to_wide("Volume Up (+)\t+").as_ptr());
+        AppendMenuW(audio_menu, MF_STRING, ID_AUDIO_VOL_DOWN, to_wide("Volume Down (-)\t-").as_ptr());
         AppendMenuW(main_menu, MF_POPUP, audio_menu as usize, to_wide("Audio").as_ptr());
 
-        // 4. Menu Video
+        // 4. Video Menu
         let video_menu = CreatePopupMenu();
-        AppendMenuW(video_menu, MF_STRING, ID_VIDEO_FULLSCREEN, to_wide("Schermo Intero\tF11").as_ptr());
-        AppendMenuW(video_menu, MF_STRING, ID_VIDEO_SCREENSHOT, to_wide("Salva Screenshot\tF12").as_ptr());
+        AppendMenuW(video_menu, MF_STRING, ID_VIDEO_FULLSCREEN, to_wide("Fullscreen\tF11").as_ptr());
+        AppendMenuW(video_menu, MF_STRING, ID_VIDEO_SCREENSHOT, to_wide("Save Screenshot\tF12").as_ptr());
         AppendMenuW(video_menu, MF_SEPARATOR, 0, std::ptr::null());
-        AppendMenuW(video_menu, MF_STRING, ID_VIDEO_PAL, to_wide("PAL (50 Hz) [Standard CD-i 220]").as_ptr());
+        AppendMenuW(video_menu, MF_STRING, ID_VIDEO_PAL, to_wide("PAL (50 Hz) [CD-i 220 Standard]").as_ptr());
         AppendMenuW(video_menu, MF_STRING, ID_VIDEO_NTSC, to_wide("NTSC (60 Hz)").as_ptr());
         AppendMenuW(video_menu, MF_SEPARATOR, 0, std::ptr::null());
-        AppendMenuW(video_menu, MF_STRING | MF_CHECKED, ID_EMU_WAITSTATES, to_wide("Velocità Hardware Reale CD-i (Wait-States)").as_ptr());
-        AppendMenuW(video_menu, MF_STRING | MF_CHECKED, ID_EMU_DVC, to_wide("Cartuccia Digital Video (DVC) [vmpega.rom]").as_ptr());
+        AppendMenuW(video_menu, MF_STRING | MF_CHECKED, ID_EMU_WAITSTATES, to_wide("Authentic Hardware Speed (Wait-States)").as_ptr());
+        AppendMenuW(video_menu, MF_STRING | MF_CHECKED, ID_EMU_DVC, to_wide("Digital Video Cartridge (DVC) [vmpega.rom]").as_ptr());
         AppendMenuW(main_menu, MF_POPUP, video_menu as usize, to_wide("Video").as_ptr());
 
-        // 5. Menu Aiuto
+        // 5. Help Menu
         let help_menu = CreatePopupMenu();
-        AppendMenuW(help_menu, MF_STRING, ID_HELP_CONTROLS, to_wide("Guida Comandi CD-i...").as_ptr());
-        AppendMenuW(help_menu, MF_STRING, ID_HELP_ABOUT, to_wide("Informazioni su OpenCDi...").as_ptr());
-        AppendMenuW(main_menu, MF_POPUP, help_menu as usize, to_wide("Aiuto").as_ptr());
+        AppendMenuW(help_menu, MF_STRING, ID_HELP_CONTROLS, to_wide("Controls Guide...").as_ptr());
+        AppendMenuW(help_menu, MF_STRING, ID_HELP_ABOUT, to_wide("About OpenCDi...").as_ptr());
+        AppendMenuW(main_menu, MF_POPUP, help_menu as usize, to_wide("Help").as_ptr());
 
         SetMenu(hwnd, main_menu);
         DrawMenuBar(hwnd);
@@ -725,19 +725,19 @@ pub fn attach_gui_menu(
 pub fn open_file_dialog(owner: *mut std::ffi::c_void) -> Option<PathBuf> {
     let mut file_buf = [0u16; 1024];
 
-    // Filter string: "Giochi Philips CD-i (*.chd, *.iso, *.bin, *.cue)\0*.chd;*.iso;*.bin;*.cue\0Tutti i file (*.*)\0*.*\0\0"
+    // Filter string: "CD-i Disc Images (*.chd, *.iso, *.bin, *.cue)\0*.chd;*.iso;*.bin;*.cue\0All Files (*.*)\0*.*\0\0"
     let mut filter: Vec<u16> = Vec::new();
-    filter.extend(OsStr::new("Giochi CD-i (*.chd;*.iso;*.bin;*.cue)").encode_wide());
+    filter.extend(OsStr::new("CD-i Disc Images (*.chd;*.iso;*.bin;*.cue)").encode_wide());
     filter.push(0);
     filter.extend(OsStr::new("*.chd;*.iso;*.bin;*.cue").encode_wide());
     filter.push(0);
-    filter.extend(OsStr::new("Tutti i file (*.*)").encode_wide());
+    filter.extend(OsStr::new("All Files (*.*)").encode_wide());
     filter.push(0);
     filter.extend(OsStr::new("*.*").encode_wide());
     filter.push(0);
     filter.push(0);
 
-    let title = to_wide("Seleziona Gioco CD-i (CHD / ISO / BIN)");
+    let title = to_wide("Select CD-i Disc Image (CHD / ISO / BIN / CUE)");
 
     let mut ofn: OPENFILENAMEW = unsafe { std::mem::zeroed() };
     ofn.lStructSize = std::mem::size_of::<OPENFILENAMEW>() as u32;
@@ -761,40 +761,40 @@ pub fn open_file_dialog(owner: *mut std::ffi::c_void) -> Option<PathBuf> {
 
 pub fn show_controls_dialog(owner: *mut std::ffi::c_void) {
     let text = to_wide(
-        "OpenCDi - Configurazione Comandi Philips CD-i\n\
+        "OpenCDi - Philips CD-i Controls Configuration\n\
         =================================================\n\n\
-        Sono disponibili profili rapidi selezionabili dal menu Comandi:\n\n\
-        1. PROFILO STANDARD (Predefinito):\n\
-           • Movimento / D-Pad: Frecce Direzionali\n\
-           • Tasto 1 (Azione / Conferma): [Z]\n\
-           • Tasto 2 (Salto / Azione 2): [X]\n\n\
-        2. PROFILO WASD (Stile PC):\n\
-           • Movimento: [W] [A] [S] [D]\n\
-           • Tasto 1: [J]  |  Tasto 2: [K]\n\n\
-        3. PROFILO TASTIERINO (Numpad):\n\
-           • Movimento: [8] [4] [6] [2]\n\
-           • Tasto 1: [1]  |  Tasto 2: [0]\n\n\
-        4. PROFILO PERSONALIZZATO:\n\
-           • Modificabile tramite 'Comandi -> Modifica Comandi in Notepad...'\n\
-           • Salva in opencdi_controls.ini qualsiasi tasto (es. Space, Enter, Shift...)\n\n\
-        MOUSE E TOUCH:\n\
-           • Muovi il mouse per muovere la freccia o il cursore.\n\
-           • Clic Sinistro = Tasto 1  |  Clic Destro = Tasto 2\n\
-           • Tasto Centrale: Sblocca / blocca il cursore dalla finestra.\n\n\
-        GAMEPAD USB / XBOX / PLAYSTATION:\n\
-           • Croce Direzionale o Levetta Analogica Sinistra = Movimento\n\
-           • Tasto A / Croce = Tasto 1\n\
-           • Tasto B / Cerchio / X = Tasto 2\n\
-           • Tasto Start = Azione / Pausa\n\n\
-        SCORCIATOIE RAPIDE:\n\
-           • F12: Salva Screenshot (screenshots_hotel_mario/)\n\
-           • Ctrl+O: Apri file gioco (CHD / ISO / BIN)\n\
-           • F5: Riavvia console (Reset)\n\
-           • F11: Schermo Intero\n\
-           • M: Muto / Riattiva audio\n\
-           • + / - : Regola volume"
+        Quick control profiles available under the 'Controls' menu:\n\n\
+        1. STANDARD PROFILE (Default):\n\
+           • Directional Movement / D-Pad: Arrow Keys\n\
+           • Button 1 (Action / Confirm): [Z]\n\
+           • Button 2 (Jump / Action 2): [X]\n\n\
+        2. WASD PROFILE (PC Style):\n\
+           • Movement: [W] [A] [S] [D]\n\
+           • Button 1: [J]  |  Button 2: [K]\n\n\
+        3. NUMPAD PROFILE:\n\
+           • Movement: [8] [4] [6] [2]\n\
+           • Button 1: [1]  |  Button 2: [0]\n\n\
+        4. CUSTOM PROFILE:\n\
+           • Configurable via 'Controls -> Edit Controls in Notepad...'\n\
+           • Map any key (e.g. Space, Enter, Shift, etc.) in opencdi_controls.ini\n\n\
+        MOUSE & TOUCH:\n\
+           • Move host mouse to move the on-screen pointer or cursor.\n\
+           • Left Click = Button 1  |  Right Click = Button 2\n\
+           • Middle Click: Lock / release host mouse cursor to/from the window.\n\n\
+        USB GAMEPAD / XBOX / PLAYSTATION:\n\
+           • D-Pad or Left Analog Stick = Movement\n\
+           • Button A / Cross = Button 1\n\
+           • Button B / Circle / X = Button 2\n\
+           • Start Button = Action / Pause\n\n\
+        KEYBOARD SHORTCUTS:\n\
+           • F12: Save Screenshot\n\
+           • Ctrl+O: Open disc image (CHD / ISO / BIN)\n\
+           • F5: Restart console (Reset)\n\
+           • F11: Fullscreen\n\
+           • M: Mute / Unmute audio\n\
+           • + / - : Adjust volume"
     );
-    let title = to_wide("OpenCDi - Guida e Mappatura Comandi");
+    let title = to_wide("OpenCDi - Controls & Key Mapping Guide");
     unsafe {
         MessageBoxW(owner, text.as_ptr(), title.as_ptr(), MB_OK | MB_ICONINFORMATION);
     }
@@ -802,17 +802,19 @@ pub fn show_controls_dialog(owner: *mut std::ffi::c_void) {
 
 pub fn show_about_dialog(owner: *mut std::ffi::c_void) {
     let text = to_wide(
-        "OpenCDi - Emulatore Philips CD-i\n\
-        Versione: 0.2.0 (High Performance Edition)\n\
-        Sviluppato con Rust & MiniFB\n\n\
-        Caratteristiche implementate:\n\
-        • Microprocessore SCC68070 & OS-9 CD-RTOS\n\
-        • Controller Video MCD212 con piani A & B e supporto bitmap\n\
-        • Decoder Audio CD-i ADPCM Level B Stereo con riempimento mappe audio SoundMap\n\
-        • Interfaccia grafica nativa Windows con menu di controllo e selezione file\n\
-        • Supporto Gamepad USB (DirectInput / XInput) e cattura mouse precisa"
+        "OpenCDi - Philips CD-i Emulator\n\
+        Version: 0.1.6 (High Performance Edition)\n\
+        Built with Rust & MiniFB\n\n\
+        Key Emulation Features:\n\
+        • Philips SCC68070 Microprocessor & OS-9 CD-RTOS kernel\n\
+        • Philips MCD-212 Video Display Controller (Planes A & B, ICA/DCA display lists)\n\
+        • CDIC CD-i Controller & ADPCM Audio Decoder (Levels A, B, C stereo/mono)\n\
+        • Motorola 68HC05 Slave Microcontroller (HLE keyboard, mouse, RTC, NVRAM)\n\
+        • Digital Video Cartridge (DVC / MPEG-1) for Full Motion Video titles\n\
+        • Win32 GUI menu with disc hot-swapping and configurable controls\n\
+        • Direct USB gamepad (XInput / DirectInput) and precise mouse capture"
     );
-    let title = to_wide("Informazioni su OpenCDi");
+    let title = to_wide("About OpenCDi");
     unsafe {
         MessageBoxW(owner, text.as_ptr(), title.as_ptr(), MB_OK | MB_ICONINFORMATION);
     }

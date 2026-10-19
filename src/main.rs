@@ -56,6 +56,7 @@ unsafe extern "system" {
     fn ClipCursor(lp_rect: *const RECT) -> i32;
     fn GetClientRect(hwnd: *mut std::ffi::c_void, lp_rect: *mut RECT) -> i32;
     fn ClientToScreen(hwnd: *mut std::ffi::c_void, lp_point: *mut POINT) -> i32;
+    fn MessageBoxW(hwnd: *mut std::ffi::c_void, lptext: *const u16, lpcaption: *const u16, utype: u32) -> i32;
 }
 
 #[cfg(target_os = "windows")]
@@ -104,23 +105,88 @@ fn set_mouse_confinement(_confined: bool, _hwnd: *mut std::ffi::c_void, _is_curr
 
 
 fn find_file(relative_subpath: &str) -> Option<PathBuf> {
-    let mut candidates = vec![
-        Path::new(relative_subpath).to_path_buf(),
-        Path::new("..").join(relative_subpath),
-        Path::new("file utili").join(relative_subpath),
-        Path::new("..").join("file utili").join(relative_subpath),
+    let sub = Path::new(relative_subpath);
+    let leaf_name = sub.file_name().and_then(|s| s.to_str()).unwrap_or(relative_subpath);
+
+    let mut candidate_bases: Vec<PathBuf> = vec![
+        PathBuf::from("."),
+        PathBuf::from(".."),
+        PathBuf::from("file utili"),
+        PathBuf::from("..").join("file utili"),
     ];
+
     if let Ok(exe_path) = std::env::current_exe() {
         if let Some(exe_dir) = exe_path.parent() {
-            candidates.push(exe_dir.join(relative_subpath));
-            candidates.push(exe_dir.join("..").join(relative_subpath));
-            candidates.push(exe_dir.join("file utili").join(relative_subpath));
-            candidates.push(exe_dir.join("..").join("file utili").join(relative_subpath));
+            candidate_bases.push(exe_dir.to_path_buf());
+            candidate_bases.push(exe_dir.join(".."));
+            candidate_bases.push(exe_dir.join("file utili"));
+            candidate_bases.push(exe_dir.join("..").join("file utili"));
         }
     }
-    for c in &candidates {
-        if c.exists() {
-            return Some(c.clone());
+
+    for base in &candidate_bases {
+        // 1. Try exact relative subpath (e.g., bios/cdi220b.rom)
+        let exact = base.join(relative_subpath);
+        if exact.is_file() {
+            return Some(exact);
+        }
+        // 2. Try direct leaf filename (e.g., cdi220b.rom alongside executable)
+        let leaf = base.join(leaf_name);
+        if leaf.is_file() {
+            return Some(leaf);
+        }
+    }
+    None
+}
+
+fn find_bios_rom() -> Option<PathBuf> {
+    const BIOS_CANDIDATES: &[&str] = &[
+        "bios/cdi220b.rom",
+        "cdi220b.rom",
+        "bios/cdi220.rom",
+        "cdi220.rom",
+        "bios/cdi200.rom",
+        "cdi200.rom",
+        "bios/cdi.rom",
+        "cdi.rom",
+        "bios/cdi490a.rom",
+        "cdi490a.rom",
+    ];
+    for &name in BIOS_CANDIDATES {
+        if let Some(p) = find_file(name) {
+            return Some(p);
+        }
+    }
+    None
+}
+
+fn find_dvc_rom() -> Option<PathBuf> {
+    const DVC_CANDIDATES: &[&str] = &[
+        "dvc/vmpega.rom",
+        "bios/vmpega.rom",
+        "vmpega.rom",
+        "dvc/impega.rom",
+        "bios/impega.rom",
+        "impega.rom",
+    ];
+    for &name in DVC_CANDIDATES {
+        if let Some(p) = find_file(name) {
+            return Some(p);
+        }
+    }
+    None
+}
+
+fn find_nvram_file() -> Option<PathBuf> {
+    const NVRAM_CANDIDATES: &[&str] = &[
+        "bios/nvram_mk48t08.bin",
+        "nvram_mk48t08.bin",
+        "bios/nvram.bin",
+        "nvram.bin",
+    ];
+    for &name in NVRAM_CANDIDATES {
+        if let Some(p) = find_file(name) {
+            return Some(p);
         }
     }
     None
@@ -190,32 +256,73 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // 1. Load BIOS ROM
-    let bios_path = find_file("bios/cdi220b.rom").expect("BIOS cdi220b.rom non trovato");
+    let bios_path = match find_bios_rom() {
+        Some(path) => path,
+        None => {
+            let error_msg =
+                "OpenCDi - Required System BIOS Missing\n\
+                ======================================\n\n\
+                The emulator cannot start because no Philips CD-i system BIOS ROM was found.\n\n\
+                Recommended File:\n\
+                  • cdi220b.rom (512 KB, Philips CD-i 220 European PAL BIOS)\n\
+                    SHA-1: 53360A1F21DDAC952E95306CED64186A3FC0B93E\n\
+                    MD5:   AC0D468BE366779C9DF633BE98DA250A\n\n\
+                Alternative Supported BIOSes:\n\
+                  • cdi220.rom, cdi200.rom, cdi490a.rom\n\n\
+                Where to place the BIOS ROM:\n\
+                  1. In a 'bios/' subfolder next to opencdi.exe\n\
+                  2. OR directly in the same folder as opencdi.exe\n\n\
+                Digital Video Cartridge (DVC) for MPEG / FMV games:\n\
+                  • Place 'vmpega.rom' (256 KB) in 'dvc/', 'bios/', or next to opencdi.exe.";
+
+            error!("{}", error_msg);
+
+            #[cfg(target_os = "windows")]
+            unsafe {
+                use std::os::windows::ffi::OsStrExt;
+                let wide_text: Vec<u16> = std::ffi::OsStr::new(error_msg)
+                    .encode_wide()
+                    .chain(std::iter::once(0))
+                    .collect();
+                let wide_title: Vec<u16> = std::ffi::OsStr::new("OpenCDi - Required BIOS Missing")
+                    .encode_wide()
+                    .chain(std::iter::once(0))
+                    .collect();
+                MessageBoxW(
+                    std::ptr::null_mut(),
+                    wide_text.as_ptr(),
+                    wide_title.as_ptr(),
+                    0x0000_0000 | 0x0000_0010, // MB_OK | MB_ICONERROR
+                );
+            }
+            std::process::exit(1);
+        }
+    };
     bus.load_rom(&bios_path)?;
-    info!("Caricato BIOS da {:?}", bios_path);
+    info!("Loaded system BIOS from {:?}", bios_path);
 
     // 2. Load NVRAM if present
-    if let Some(nvram_path) = find_file("bios/nvram_mk48t08.bin") {
+    if let Some(nvram_path) = find_nvram_file() {
         let _ = bus.nvram.load_from_file(&nvram_path);
-        info!("Caricato NVRAM da {:?}", nvram_path);
+        info!("Loaded NVRAM from {:?}", nvram_path);
     }
 
     // 2b. Load DVC ROM (Digital Video Cartridge) by default if present
     let dvc_disabled = std::env::args().any(|a| a == "--no-dvc" || a == "--nodvc");
     if !dvc_disabled {
-        if let Some(dvc_path) = find_file("dvc/vmpega.rom") {
+        if let Some(dvc_path) = find_dvc_rom() {
             if let Ok(_) = bus.load_dvc_rom(&dvc_path) {
-                info!("Caricata estensione Digital Video Cartridge (DVC) da {:?}", dvc_path);
+                info!("Loaded Digital Video Cartridge (DVC) ROM from {:?}", dvc_path);
             }
         } else {
-            info!("Nessuna ROM DVC (vmpega.rom) trovata in dvc/: avvio in modalità CD-i Base");
+            info!("No DVC ROM (vmpega.rom) found: booting in Base CD-i mode (MPEG video disabled).");
         }
     } else {
-        info!("Avvio forzato senza DVC (--no-dvc): modalità CD-i Base");
+        info!("Forced boot without DVC (--no-dvc): Base CD-i mode");
     }
 
     // 3. Optional Game Disc (from command line argument, or None for standalone BIOS)
-    let mut current_game_name = "Nessun disco (BIOS Standalone)".to_string();
+    let mut current_game_name = "No disc inserted (Standalone BIOS)".to_string();
     let initial_disc = std::env::args().nth(1).and_then(|a| {
         if a == "--bios" || a == "--standalone" || a == "--no-dvc" || a == "--nodvc" || a == "--slave-debug" {
             None
@@ -233,24 +340,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 current_game_name = p
                     .file_stem()
                     .map(|s| s.to_string_lossy().to_string())
-                    .unwrap_or_else(|| "Gioco CD-i".to_string());
-                info!("Caricato disco di gioco all'avvio: {}", current_game_name);
+                    .unwrap_or_else(|| "CD-i Disc".to_string());
+                info!("Loaded game disc at startup: {}", current_game_name);
 
                 let name_upper = current_game_name.to_uppercase();
                 let is_ntsc = (name_upper.contains("(USA)") || name_upper.contains("(JAPAN)") || name_upper.contains("NTSC"))
                     && bus.cdrom.as_ref().map_or(true, |cd| cd.disc_type != 0x20);
                 if is_ntsc {
-                    info!("Rilevato disco NTSC (USA/Japan): impostazione automatica modalità video NTSC 60 Hz");
+                    info!("Detected NTSC disc (USA/Japan): auto-configured NTSC 60 Hz video mode");
                     bus.set_video_mode(crate::mcd212::VideoMode::Ntsc);
                 } else {
-                    info!("Console avviata in modalità standard PAL 50 Hz (BIOS cdi220b)");
+                    info!("Console booted in standard PAL 50 Hz mode (CD-i 220 BIOS)");
                     bus.set_video_mode(crate::mcd212::VideoMode::Pal);
                 }
             }
-            Err(e) => error!("Errore caricamento disco di gioco da {:?}: {:?}", p, e),
+            Err(e) => error!("Error loading game disc from {:?}: {:?}", p, e),
         }
     } else {
-        info!("Avvio console in modalità Standalone BIOS (nessun disco inserito) - Standard PAL 50 Hz");
+        info!("Starting console in Standalone BIOS mode (no disc inserted) - PAL 50 Hz");
         bus.set_video_mode(crate::mcd212::VideoMode::Pal);
     }
 
@@ -258,7 +365,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut cpu = CpuCore::new();
     cpu.set_cpu_type(CpuType::SCC68070);
     cpu.reset(&mut bus);
-    info!("CPU SCC68070 reimpostata - PC: 0x{:08X}", cpu.pc);
+    info!("CPU SCC68070 reset - PC: 0x{:08X}", cpu.pc);
 
     // 5. Create Display Window
     let mut window = Window::new(
@@ -297,7 +404,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 9. Initialize USB Gamepad subsystem (Gilrs / XInput / DirectInput)
     let mut gilrs = gilrs::Gilrs::new().ok();
     if gilrs.is_some() {
-        info!("Driver Gamepad USB attivo (Xbox / PlayStation / Generico USB)");
+        info!("USB Gamepad subsystem active (Xbox / PlayStation / Generic USB)");
     }
 
     let mut frame_count: u64 = 0;
@@ -310,7 +417,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut pad_x_f: f32 = pad_x as f32;
     let mut pad_y_f: f32 = pad_y as f32;
     let mut pad_active = false;
-    bus.emulate_wait_states = true; // Wait-states autentici hardware 15.5MHz, velocizzati dall'uncapped fast-boot
+    bus.emulate_wait_states = true; // Authentic hardware wait-states (15.5 MHz)
     let mut mouse_captured = true;
     let mut host_cursor_hidden = false;
     let mut mouse_clipped = false;
@@ -325,7 +432,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut prev_f5 = false;
     let mut prev_key_btn: u8 = 0;
 
-    info!("Loop di emulazione avviato. Usa il menu o i tasti rapidi: [Ctrl+I] Inserisci Disco, [Ctrl+O] Apri e Riavvia, [F5] Reset, [F11] Schermo Intero, [Rotellina/Tasto Centrale] Cattura/Libera Mouse");
+    info!("Emulation loop started. Use menu or shortcuts: [Ctrl+I] Insert Disc, [Ctrl+O] Open & Reset, [F5] Reset, [F11] Fullscreen, [Middle Click] Capture/Release Mouse");
 
     let mut fps_timer = std::time::Instant::now();
     let mut measured_fps = 50.0f64;
@@ -345,34 +452,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         while let Some(action) = pop_action() {
             match action {
                 GuiAction::InsertDisc(path) => {
-                    info!("Inserimento disco a caldo (Hot-Swap): {:?}", path);
+                    info!("Hot-swapping disc into CD-i drive: {:?}", path);
                     match bus.change_disc(&path) {
                         Ok(_) => {
                             current_game_name = path
                                 .file_stem()
                                 .map(|s| s.to_string_lossy().to_string())
-                                .unwrap_or_else(|| "Gioco CD-i".to_string());
-                            info!("Nuovo disco inserito a caldo con successo: {}", current_game_name);
+                                .unwrap_or_else(|| "CD-i Disc".to_string());
+                            info!("New disc inserted successfully: {}", current_game_name);
                         }
                         Err(e) => {
-                            error!("Impossibile inserire a caldo il disco {:?}: {:?}", path, e);
+                            error!("Failed to hot-swap disc {:?}: {:?}", path, e);
                         }
                     }
                 }
                 GuiAction::OpenDisc(path) => {
-                    info!("Caricamento e avvio nuovo disco (Reset): {:?}", path);
+                    info!("Loading and booting new disc (Reset): {:?}", path);
                     match bus.load_cdrom(&path) {
                         Ok(_) => {
                             current_game_name = path
                                 .file_stem()
                                 .map(|s| s.to_string_lossy().to_string())
-                                .unwrap_or_else(|| "Gioco CD-i".to_string());
-                            info!("Gioco caricato con successo: {}", current_game_name);
+                                .unwrap_or_else(|| "CD-i Disc".to_string());
+                            info!("Disc loaded successfully: {}", current_game_name);
 
                             if !dvc_disabled && !bus.dvc.is_fitted() {
-                                if let Some(dvc_path) = find_file("dvc/vmpega.rom") {
+                                if let Some(dvc_path) = find_dvc_rom() {
                                     if let Ok(_) = bus.load_dvc_rom(&dvc_path) {
-                                        info!("Caricata estensione Digital Video Cartridge (DVC) da {:?}", dvc_path);
+                                        info!("Loaded Digital Video Cartridge (DVC) extension from {:?}", dvc_path);
                                         #[cfg(target_os = "windows")]
                                         crate::gui::update_dvc_menu(true);
                                     }
@@ -383,7 +490,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             let is_ntsc = (name_upper.contains("(USA)") || name_upper.contains("(JAPAN)") || name_upper.contains("NTSC"))
                                 && bus.cdrom.as_ref().map_or(true, |cd| cd.disc_type != 0x20);
                             let mode = if is_ntsc {
-                                info!("Rilevato disco NTSC (USA/Japan): impostazione automatica modalità video NTSC 60 Hz");
+                                info!("Detected NTSC disc (USA/Japan): auto-configured NTSC 60 Hz video mode");
                                 crate::mcd212::VideoMode::Ntsc
                             } else {
                                 crate::mcd212::VideoMode::Pal
@@ -408,24 +515,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             fps_timer = std::time::Instant::now();
                         }
                         Err(e) => {
-                            error!("Impossibile caricare il gioco {:?}: {:?}", path, e);
+                            error!("Failed to load disc {:?}: {:?}", path, e);
                         }
                     }
                 }
                 GuiAction::EjectDisc => {
-                    info!("Espulsione disco dal lettore CD-i");
+                    info!("Ejecting disc from CD-i drive");
                     bus.slave.set_disc_inserted(false);
                     bus.cdrom = None;
                     disc_launched = false;
                     shell_ready_count = 0;
-                    current_game_name = "Nessun disco (BIOS Standalone)".to_string();
+                    current_game_name = "No disc inserted (Standalone BIOS)".to_string();
                     pad_x = 384;
                     pad_y = 280;
                     pad_x_f = 384.0;
                     pad_y_f = 280.0;
                 }
                 GuiAction::Reset => {
-                    info!("Riavvio dell'emulatore (Reset)");
+                    info!("Console reset requested");
                     bus.reset_system();
                     cpu.reset(&mut bus);
                     frame_count = 0;
@@ -442,28 +549,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     fps_timer = std::time::Instant::now();
                 }
                 GuiAction::Exit => {
-                    info!("Uscita richiesta dal menu File");
+                    info!("Exit requested from File menu");
                     exit_requested = true;
                     break;
                 }
                 GuiAction::SetProfile(profile) => {
                     bindings.set_profile(profile);
                     update_profile_menu(bindings.profile);
-                    info!("Profilo comandi aggiornato a: {:?}", bindings.profile);
+                    info!("Control profile updated to: {:?}", bindings.profile);
                 }
                 GuiAction::SetInputDevice(mode) => {
                     input_device_mode = mode;
                     update_input_device_menu(mode);
-                    info!("Dispositivo di puntamento/controllo impostato a: {:?}", mode);
+                    info!("Input device mode set to: {:?}", mode);
                 }
                 GuiAction::ReloadControls => {
                     bindings.load_from_ini();
                     update_profile_menu(bindings.profile);
-                    info!("Comandi ricaricati da file INI. Profilo: {:?}", bindings.profile);
+                    info!("Controls reloaded from INI file. Profile: {:?}", bindings.profile);
                 }
                 GuiAction::ToggleReleaseMouse => {
                     mouse_captured = !mouse_captured;
-                    info!("Mouse capture: {}", if mouse_captured { "ATTIVO" } else { "LIBERO" });
+                    info!("Mouse capture: {}", if mouse_captured { "CAPTURED" } else { "RELEASED" });
                 }
                 GuiAction::ToggleMute => {
                     bus.cdic.audio.muted = !bus.cdic.audio.muted;
@@ -485,29 +592,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     bus.set_video_mode(mode);
                     #[cfg(target_os = "windows")]
                     crate::gui::update_video_menu(mode);
-                    info!("Modalità video impostata a: {:?}", mode);
+                    info!("Video mode set to: {:?}", mode);
                 }
                 GuiAction::ToggleWaitStates => {
                     bus.emulate_wait_states = !bus.emulate_wait_states;
                     #[cfg(target_os = "windows")]
                     crate::gui::update_waitstates_menu(bus.emulate_wait_states);
-                    info!("Velocità Hardware Reale CD-i (Wait-States): {}", if bus.emulate_wait_states { "ABILITATA (Authentic CD-i 220)" } else { "DISABILITATA (Turbo Zero-Wait)" });
+                    info!("Authentic Hardware Speed (Wait-States): {}", if bus.emulate_wait_states { "ENABLED (Authentic CD-i 220)" } else { "DISABLED (Turbo Zero-Wait)" });
                 }
                 GuiAction::ToggleDvc => {
                     if bus.dvc.is_fitted() {
-                        info!("Rimozione Cartuccia DVC (modalità CD-i Base)");
+                        info!("Removing Digital Video Cartridge (Base CD-i mode)");
                         bus.dvc = crate::dvc::Dvc::new();
                         #[cfg(target_os = "windows")]
                         crate::gui::update_dvc_menu(false);
                     } else {
-                        if let Some(dvc_path) = find_file("dvc/vmpega.rom") {
+                        if let Some(dvc_path) = find_dvc_rom() {
                             if let Ok(_) = bus.load_dvc_rom(&dvc_path) {
-                                info!("Inserita Cartuccia Digital Video (DVC) da {:?}", dvc_path);
+                                info!("Inserted Digital Video Cartridge (DVC) from {:?}", dvc_path);
                                 #[cfg(target_os = "windows")]
                                 crate::gui::update_dvc_menu(true);
                             }
                         } else {
-                            error!("Impossibile abilitare DVC: ROM vmpega.rom non trovata in dvc/");
+                            error!("Cannot enable DVC: vmpega.rom not found in dvc/, bios/, or root directory");
                         }
                     }
                     bus.reset_system();
@@ -980,13 +1087,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Real-Time Anomaly Detector
             if frame_count > 100 && (speed_pct > 108.0 || (speed_pct < 92.0 && speed_pct > 20.0)) {
                 log::warn!(
-                    "[TELEMETRIA ANOMALIA VELOCITÀ] Velocità: {:.1}% ({:.1} FPS su target {:.0} Hz) | MIPS: {:.2} | CD: {:.1} sec/s",
+                    "[TELEMETRY SPEED ANOMALY] Speed: {:.1}% ({:.1} FPS on target {:.0} Hz) | MIPS: {:.2} | CD: {:.1} sec/s",
                     speed_pct, measured_fps, target_fps, measured_mips, measured_cd_rate
                 );
             }
             if measured_mips > 4.5 && bus.emulate_wait_states {
                 log::warn!(
-                    "[TELEMETRIA ANOMALIA CPU] Esecuzione anomala CPU: {:.2} MIPS (attesi ~3.2-3.5 MIPS per SCC68070 a 15.5MHz)",
+                    "[TELEMETRY CPU ANOMALY] Unexpected CPU throughput: {:.2} MIPS (expected ~3.2-3.5 MIPS for SCC68070 at 15.5MHz)",
                     measured_mips
                 );
             }
@@ -1023,6 +1130,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         timeEndPeriod(1);
     }
 
-    info!("Emulazione arrestata. PC finale: 0x{:08X}", cpu.pc);
+    info!("Emulation stopped. Final PC: 0x{:08X}", cpu.pc);
     Ok(())
 }
