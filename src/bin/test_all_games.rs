@@ -1,22 +1,22 @@
-#[path = r"C:\Users\Gian\.gemini\antigravity\scratch\philips cdi\opencdi\src\audio.rs"]
+#[path = "../audio.rs"]
 mod audio;
-#[path = r"C:\Users\Gian\.gemini\antigravity\scratch\philips cdi\opencdi\src\bus.rs"]
+#[path = "../bus.rs"]
 mod bus;
-#[path = r"C:\Users\Gian\.gemini\antigravity\scratch\philips cdi\opencdi\src\cdic.rs"]
+#[path = "../cdic.rs"]
 mod cdic;
-#[path = r"C:\Users\Gian\.gemini\antigravity\scratch\philips cdi\opencdi\src\cdrom.rs"]
+#[path = "../cdrom.rs"]
 mod cdrom;
-#[path = r"C:\Users\Gian\.gemini\antigravity\scratch\philips cdi\opencdi\src\dma.rs"]
+#[path = "../dma.rs"]
 mod dma;
 #[path = "../dvc.rs"]
 mod dvc;
-#[path = r"C:\Users\Gian\.gemini\antigravity\scratch\philips cdi\opencdi\src\mcd212.rs"]
+#[path = "../mcd212.rs"]
 mod mcd212;
-#[path = r"C:\Users\Gian\.gemini\antigravity\scratch\philips cdi\opencdi\src\nvram.rs"]
+#[path = "../nvram.rs"]
 mod nvram;
-#[path = r"C:\Users\Gian\.gemini\antigravity\scratch\philips cdi\opencdi\src\scc_timer.rs"]
+#[path = "../scc_timer.rs"]
 mod scc_timer;
-#[path = r"C:\Users\Gian\.gemini\antigravity\scratch\philips cdi\opencdi\src\slave.rs"]
+#[path = "../slave.rs"]
 mod slave;
 
 use std::path::{Path, PathBuf};
